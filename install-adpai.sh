@@ -110,14 +110,13 @@ tmp=$(mktemp)
 grep -v '^@adports:registry='                                                   "$NPMRC" \
   | grep -v 'pkgs\.dev\.azure\.com/abudhabiports/_packaging/adpai'              \
   | grep -v 'pkgs\.dev\.azure\.com/abudhabiports/Foundations/_packaging/ai-native' \
+  | grep -v '^always-auth=' \
   > "$tmp" || true
 mv "$tmp" "$NPMRC"
 
 cat >> "$NPMRC" <<EOF
 @adports:registry=${FEED_URL}
-${FEED_REGISTRY_HOST}:always-auth=true
 ${FEED_REGISTRY_HOST}:_authToken=${TOKEN}
-${FEED_BASE_HOST}:always-auth=true
 ${FEED_BASE_HOST}:_authToken=${TOKEN}
 EOF
 unset TOKEN

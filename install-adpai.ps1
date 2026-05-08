@@ -39,7 +39,7 @@ Ok "Node v$nodeVer, npm $(npm -v)"
 # ---------- vsts-npm-auth ----------
 if (-not (Get-Command vsts-npm-auth -ErrorAction SilentlyContinue)) {
   Say 'Installing vsts-npm-auth (Microsoft Azure Artifacts auth helper)'
-  npm install -g vsts-npm-auth | Out-Null
+  npm install -g vsts-npm-auth 2>&1 | Out-Null
 }
 Ok 'vsts-npm-auth ready'
 
@@ -48,8 +48,7 @@ $work = Join-Path $env:TEMP "adpai-bootstrap-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $projectNpmrc = Join-Path $work '.npmrc'
 @(
-  "@adports:registry=$FeedUrl",
-  'always-auth=true'
+  "@adports:registry=$FeedUrl"
 ) | Set-Content -Path $projectNpmrc -Encoding ASCII
 
 # ---------- SSO sign-in ----------
@@ -69,6 +68,7 @@ if (Test-Path $Npmrc) {
   $kept = @()
   $sawScope = $false
   foreach ($line in $existing) {
+    if ($line -match '^always-auth\s*=') { continue }
     if ($line -match '^@adports:registry=') {
       if (-not $sawScope -and $line -match 'adpai') {
         $kept += $line
@@ -81,14 +81,13 @@ if (Test-Path $Npmrc) {
   }
   if (-not $sawScope) {
     $kept += "@adports:registry=$FeedUrl"
-    $kept += 'always-auth=true'
   }
   $kept | Set-Content -Path $Npmrc -Encoding ASCII
 }
 
 # ---------- Verify + install ----------
 Say 'Verifying feed access'
-$ver = & npm view $Pkg version 2>$null
+$ver = & npm view $Pkg version 2>&1 | Where-Object { $_ -notmatch '^npm warn' } | Select-Object -First 1
 if (-not $ver) {
   Die @"
 Feed access failed. Most likely: your AD Ports identity is missing 'Feed Reader' on the adpai feed.
@@ -99,8 +98,8 @@ https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/settings/permissions
 Ok "Feed reachable — latest $Pkg = $ver"
 
 Say "Installing $Pkg globally"
-npm install -g $Pkg | Out-Null
-$installed = & adpai --version 2>$null
+npm install -g $Pkg 2>&1 | Out-Null
+$installed = & adpai --version 2>&1 | Where-Object { $_ -notmatch '^npm warn' } | Select-Object -First 1
 if (-not $installed) { $installed = "$Pkg@$ver" }
 Ok "Installed: $installed"
 
