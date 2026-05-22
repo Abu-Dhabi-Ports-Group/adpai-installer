@@ -54,6 +54,7 @@ try {
   az artifacts universal download `
     --organization $Org `
     --project $Project `
+    --scope project `
     --feed $Feed `
     --name $Package `
     --version $Version `

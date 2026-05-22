@@ -68,6 +68,7 @@ echo ">> Downloading $PACKAGE@$VERSION from $ORG/$PROJECT/$FEED ..."
 az artifacts universal download \
   --organization "$ORG" \
   --project "$PROJECT" \
+  --scope project \
   --feed "$FEED" \
   --name "$PACKAGE" \
   --version "$VERSION" \
