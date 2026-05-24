@@ -71,6 +71,16 @@ function Enable-AzureCliCorporateCa {
   return $true
 }
 
+function Enable-AzureCliDefaultCertStore ($azCmd) {
+  $result = Invoke-Native $azCmd @('config', 'set', 'core.use_default_cert_store=true', '--only-show-errors')
+  if ($result.ExitCode -ne 0) { return $false }
+
+  Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
+  Remove-Item Env:CURL_CA_BUNDLE -ErrorAction SilentlyContinue
+  Ok 'Azure CLI configured to use the Windows/default certificate store'
+  return $true
+}
+
 function Get-AzureDevOpsExtensionInstallHelp ($output) {
   $details = (@($output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
   if (-not $details) { $details = 'az extension add returned a non-zero exit code.' }
@@ -82,11 +92,12 @@ function Get-AzureDevOpsExtensionInstallHelp ($output) {
       'Zscaler recovery:',
       '1. Open a normal PowerShell window as the same Windows user, not Administrator.',
       '2. Ask IT/security for the Zscaler root CA certificate in PEM/Base64 format, or export it from certmgr.msc.',
-      '3. Save it, for example: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
-      '4. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
-      '5. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
-      '6. Run: az extension add --name azure-devops --only-show-errors',
-      '7. Rerun this installer.'
+      '3. Preferred Windows fix: az config set core.use_default_cert_store=true',
+      '4. If using a PEM file instead, save it for example as: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
+      '5. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
+      '6. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
+      '7. Run: az extension add --name azure-devops --only-show-errors',
+      '8. Rerun this installer.'
     ) -join [Environment]::NewLine
   }
 
@@ -250,6 +261,10 @@ if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
   $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
   if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliCorporateCa)) {
     Say "Retrying 'azure-devops' Azure CLI extension install with corporate CA bundle"
+    $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
+  }
+  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliDefaultCertStore $AzCmd)) {
+    Say "Retrying 'azure-devops' Azure CLI extension install with Windows/default certificate store"
     $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
   }
   if ($addExt.ExitCode -ne 0) { Die (Get-AzureDevOpsExtensionInstallHelp $addExt.Output) }
