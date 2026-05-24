@@ -27,7 +27,29 @@ $CliInstallerUrl = 'https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpa
 function Say  ($m) { Write-Host ">> $m" -ForegroundColor Cyan }
 function Ok   ($m) { Write-Host "OK $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m" -ForegroundColor Yellow }
-function Die  ($m) { Write-Host "ERROR $m" -ForegroundColor Red; exit 1 }
+function Die  ($m) { throw "ERROR $m" }
+
+function Test-IsAdministrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-AzureDevOpsExtensionInstallHelp ($output) {
+  $details = (@($output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
+  if (-not $details) { $details = 'az extension add returned a non-zero exit code.' }
+
+  return @(
+    "Could not install Azure CLI extension 'azure-devops'.",
+    "Details: $details",
+    'Recovery:',
+    '1. Close this Administrator PowerShell window and open a normal PowerShell as the same Windows user.',
+    '2. Run: az extension add --name azure-devops --only-show-errors',
+    '3. If Azure CLI reports azext_metadata.json is owned by another account, run:',
+    '   Remove-Item -Recurse -Force "$env:USERPROFILE\.azure\cliextensions\azure-devops"',
+    '   Then run step 2 again and rerun this installer.'
+  ) -join [Environment]::NewLine
+}
 
 function Invoke-Native ($filePath, $arguments) {
   $oldErrorActionPreference = $ErrorActionPreference
@@ -165,13 +187,17 @@ function Ensure-VsCodeCli {
 $AzCmd = Ensure-AzureCli
 $CodeCmd = Ensure-VsCodeCli
 
+if (Test-IsAdministrator) {
+  Warn 'Running as Administrator is not recommended. Azure CLI extensions are installed per user and can fail with profile or ownership errors. Use a normal PowerShell window unless a prerequisite installer explicitly asks for elevation.'
+}
+
 # Ensure azure-devops extension is installed (idempotent).
 $extCheck = Invoke-Native $AzCmd @('extension', 'list', '--query', "[?name=='azure-devops'].name", '-o', 'tsv')
 $extNames = @($extCheck.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
 if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
   Say "Installing 'azure-devops' Azure CLI extension"
   $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
-  if ($addExt.ExitCode -ne 0) { Die "Could not install Azure CLI extension 'azure-devops'. $($addExt.Output -join ' ')" }
+  if ($addExt.ExitCode -ne 0) { Die (Get-AzureDevOpsExtensionInstallHelp $addExt.Output) }
 }
 
 # Confirm signed in.
@@ -200,7 +226,7 @@ try {
   $vsix = Get-ChildItem -Path $tmp -Filter '*.vsix' -File | Select-Object -First 1
   if (-not $vsix) {
     Get-ChildItem -Path $tmp | Out-Host
-    Write-Error "No .vsix found in downloaded package."
+    Die "No .vsix found in downloaded package."
   }
 
   Say "Installing $($vsix.Name) into VS Code"
