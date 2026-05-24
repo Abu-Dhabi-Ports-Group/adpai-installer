@@ -5,7 +5,7 @@ Public bootstrap installers for the AD Ports SDLC AI tooling:
 - [`@adports/aidev`](https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/Npm/@adports%2Faidev/overview) — the CLI catalog scaffolder
 - [`adports.adp-ai-sdlc`](https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix) — the VS Code extension
 
-These scripts are mirrored from [`ai-skills/dist/public/`](https://dev.azure.com/abudhabiports/Foundations/_git/ai-skills?path=/dist/public). The source of truth is `ai-skills`; do not edit files in this repo directly.
+These scripts are mirrored from [`ai-skills/catalog/public-installers/`](https://dev.azure.com/abudhabiports/Foundations/_git/ai-skills?path=/catalog/public-installers). The source of truth is `ai-skills`; do not edit files in this repo directly.
 
 ## ADP AI CLI (`@adports/aidev`)
 
