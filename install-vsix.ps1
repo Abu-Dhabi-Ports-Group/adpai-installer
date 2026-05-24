@@ -45,31 +45,46 @@ function Test-IsAzureDevOpsAuthError ($output) {
   return ($details -match 'Before you can run Azure DevOps commands|az devops login|setup credentials|VS30063|TF400813|Unauthorized|401')
 }
 
-function Export-CertificateToPem ($certificate, $path) {
-  $bytes = $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-  $base64 = [Convert]::ToBase64String($bytes, [Base64FormattingOptions]::InsertLineBreaks)
-  $pem = "-----BEGIN CERTIFICATE-----`n$base64`n-----END CERTIFICATE-----`n"
-  Set-Content -Path $path -Value $pem -Encoding ascii
+function Export-CertificatesToPem ($certificates, $path) {
+  $pemBlocks = foreach ($certificate in $certificates) {
+    try {
+      $bytes = $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+      $base64 = [Convert]::ToBase64String($bytes, [Base64FormattingOptions]::InsertLineBreaks)
+      "-----BEGIN CERTIFICATE-----`n$base64`n-----END CERTIFICATE-----"
+    } catch {
+      $null
+    }
+  }
+  Set-Content -Path $path -Value (($pemBlocks | Where-Object { $_ }) -join "`n") -Encoding ascii
 }
 
-function Enable-AzureCliCorporateCa {
-  if ($env:REQUESTS_CA_BUNDLE -and (Test-Path $env:REQUESTS_CA_BUNDLE)) {
+function Enable-AzureCliCorporateCa ([switch]$Force) {
+  $bundleDir = Join-Path $env:USERPROFILE '.azure'
+  $bundlePath = Join-Path $bundleDir 'adpai-windows-ca-bundle.pem'
+  $isLegacyAdpaiBundle = $env:REQUESTS_CA_BUNDLE -and ([IO.Path]::GetFileName($env:REQUESTS_CA_BUNDLE) -ieq 'adpai-zscaler-root-ca.pem')
+
+  if (-not $Force -and $env:REQUESTS_CA_BUNDLE -and (Test-Path $env:REQUESTS_CA_BUNDLE) -and -not $isLegacyAdpaiBundle) {
     Ok "Azure CLI CA bundle already set: $env:REQUESTS_CA_BUNDLE"
     $env:CURL_CA_BUNDLE = $env:REQUESTS_CA_BUNDLE
     return $true
   }
 
-  $cert = Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root, Cert:\CurrentUser\CA, Cert:\LocalMachine\CA -ErrorAction SilentlyContinue |
-    Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } |
-    Sort-Object NotAfter -Descending |
-    Select-Object -First 1
+  $certificates = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root, Cert:\CurrentUser\CA, Cert:\LocalMachine\CA -ErrorAction SilentlyContinue |
+    Where-Object { $_.NotAfter -gt (Get-Date) } |
+    Sort-Object Thumbprint -Unique)
+  $zscalerCert = $certificates | Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } | Select-Object -First 1
 
-  if (-not $cert) { return $false }
+  if (-not $zscalerCert) {
+    if ($env:REQUESTS_CA_BUNDLE -and (Test-Path $env:REQUESTS_CA_BUNDLE)) {
+      Ok "Azure CLI CA bundle already set: $env:REQUESTS_CA_BUNDLE"
+      $env:CURL_CA_BUNDLE = $env:REQUESTS_CA_BUNDLE
+      return $true
+    }
+    return $false
+  }
 
-  $bundleDir = Join-Path $env:USERPROFILE '.azure'
   New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
-  $bundlePath = Join-Path $bundleDir 'adpai-zscaler-root-ca.pem'
-  Export-CertificateToPem $cert $bundlePath
+  Export-CertificatesToPem $certificates $bundlePath
   $env:REQUESTS_CA_BUNDLE = $bundlePath
   $env:CURL_CA_BUNDLE = $bundlePath
   Ok "Azure CLI CA bundle set from Windows certificate store: $bundlePath"
@@ -203,6 +218,12 @@ function Ensure-AzureDevOpsAuth ($azCmd, $organizationUrl, $project) {
   if (Test-IsAzureDevOpsAuthError $probe.Output) {
     Say "Azure DevOps sign-in required. Running 'az login' with Azure DevOps scope"
     $login = Invoke-Native $azCmd @('login', '--scope', '499b84ac-1321-427f-aa17-267ca6975798/.default', '--only-show-errors')
+    if ($login.ExitCode -ne 0 -and (Test-IsCertificateError $login.Output)) {
+      Enable-AzureCliCorporateCa -Force | Out-Null
+      Enable-AzureCliDefaultCertStore $azCmd | Out-Null
+      Say "Retrying Azure DevOps scoped login with Windows CA bundle"
+      $login = Invoke-Native $azCmd @('login', '--scope', '499b84ac-1321-427f-aa17-267ca6975798/.default', '--only-show-errors')
+    }
     if ($login.ExitCode -ne 0) { Die "Azure DevOps scoped login failed. $($login.Output -join ' ')" }
 
     $probe = Invoke-Native $azCmd @(
