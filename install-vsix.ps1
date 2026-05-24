@@ -166,17 +166,20 @@ $AzCmd = Ensure-AzureCli
 $CodeCmd = Ensure-VsCodeCli
 
 # Ensure azure-devops extension is installed (idempotent).
-$hasExt = & $AzCmd extension show --name azure-devops 2>$null
-if (-not $hasExt) {
+$extCheck = Invoke-Native $AzCmd @('extension', 'list', '--query', "[?name=='azure-devops'].name", '-o', 'tsv')
+$extNames = @($extCheck.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
   Say "Installing 'azure-devops' Azure CLI extension"
-  & $AzCmd extension add --name azure-devops --only-show-errors --yes | Out-Null
+  $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
+  if ($addExt.ExitCode -ne 0) { Die "Could not install Azure CLI extension 'azure-devops'. $($addExt.Output -join ' ')" }
 }
 
 # Confirm signed in.
-$account = & $AzCmd account show 2>$null
-if (-not $account) {
+$account = Invoke-Native $AzCmd @('account', 'show', '-o', 'none')
+if ($account.ExitCode -ne 0) {
   Say "Not signed in. Running 'az login'"
-  & $AzCmd login --only-show-errors | Out-Null
+  $login = Invoke-Native $AzCmd @('login', '--only-show-errors')
+  if ($login.ExitCode -ne 0) { Die "Azure login failed. $($login.Output -join ' ')" }
 }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("adpai-vsix-" + [System.Guid]::NewGuid())
