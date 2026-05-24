@@ -81,6 +81,45 @@ function Enable-AzureCliDefaultCertStore ($azCmd) {
   return $true
 }
 
+function Install-AzureDevOpsExtensionFromLocalWheel ($azCmd) {
+  $indexUri = 'https://aka.ms/azure-cli-extension-index-v1'
+  $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("adpai-azext-" + [System.Guid]::NewGuid())
+  New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+  try {
+    Say "Downloading Azure DevOps Azure CLI extension metadata with PowerShell"
+    $index = Invoke-RestMethod -UseBasicParsing -Uri $indexUri
+    $entries = @($index.extensions.'azure-devops')
+    if ($entries.Count -eq 0) { return $false }
+
+    $entry = $entries |
+      Sort-Object @{ Expression = { [version]$_.metadata.version }; Descending = $true } |
+      Select-Object -First 1
+    if (-not $entry.downloadUrl -or -not $entry.filename) { return $false }
+
+    $wheel = Join-Path $tmpDir $entry.filename
+    Say "Downloading $($entry.filename) with PowerShell"
+    Invoke-WebRequest -UseBasicParsing -Uri $entry.downloadUrl -OutFile $wheel
+
+    if ($entry.sha256Digest) {
+      $actualHash = (Get-FileHash -Algorithm SHA256 -Path $wheel).Hash.ToLowerInvariant()
+      if ($actualHash -ne $entry.sha256Digest.ToLowerInvariant()) {
+        Warn "Downloaded extension hash did not match the Azure CLI index; skipping local wheel fallback."
+        return $false
+      }
+    }
+
+    Say "Installing 'azure-devops' Azure CLI extension from local wheel"
+    $install = Invoke-Native $azCmd @('extension', 'add', '--source', $wheel, '--yes', '--only-show-errors')
+    return ($install.ExitCode -eq 0)
+  } catch {
+    Warn "PowerShell local wheel fallback failed: $($_.Exception.Message)"
+    return $false
+  } finally {
+    Remove-Item -Recurse -Force -Path $tmpDir -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-AzureDevOpsExtensionInstallHelp ($output) {
   $details = (@($output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
   if (-not $details) { $details = 'az extension add returned a non-zero exit code.' }
@@ -93,11 +132,12 @@ function Get-AzureDevOpsExtensionInstallHelp ($output) {
       '1. Open a normal PowerShell window as the same Windows user, not Administrator.',
       '2. Ask IT/security for the Zscaler root CA certificate in PEM/Base64 format, or export it from certmgr.msc.',
       '3. Preferred Windows fix: az config set core.use_default_cert_store=true',
-      '4. If using a PEM file instead, save it for example as: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
-      '5. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
-      '6. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
-      '7. Run: az extension add --name azure-devops --only-show-errors',
-      '8. Rerun this installer.'
+      '4. Alternative: download the azure-devops .whl with PowerShell from https://aka.ms/azure-cli-extension-index-v1 and install it with az extension add --source <wheel>.',
+      '5. If using a PEM file instead, save it for example as: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
+      '6. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
+      '7. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
+      '8. Run: az extension add --name azure-devops --only-show-errors',
+      '9. Rerun this installer.'
     ) -join [Environment]::NewLine
   }
 
@@ -266,6 +306,9 @@ if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
   if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliDefaultCertStore $AzCmd)) {
     Say "Retrying 'azure-devops' Azure CLI extension install with Windows/default certificate store"
     $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
+  }
+  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Install-AzureDevOpsExtensionFromLocalWheel $AzCmd)) {
+    $addExt = Invoke-Native $AzCmd @('extension', 'show', '--name', 'azure-devops', '--only-show-errors')
   }
   if ($addExt.ExitCode -ne 0) { Die (Get-AzureDevOpsExtensionInstallHelp $addExt.Output) }
 }
