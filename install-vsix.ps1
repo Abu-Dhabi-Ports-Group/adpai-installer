@@ -35,9 +35,60 @@ function Test-IsAdministrator {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-IsCertificateError ($output) {
+  $details = (@($output) | ForEach-Object { "$_" }) -join ' '
+  return ($details -match 'CERTIFICATE_VERIFY_FAILED|SSLCertVerificationError|unable to get local issuer certificate')
+}
+
+function Export-CertificateToPem ($certificate, $path) {
+  $bytes = $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+  $base64 = [Convert]::ToBase64String($bytes, [Base64FormattingOptions]::InsertLineBreaks)
+  $pem = "-----BEGIN CERTIFICATE-----`n$base64`n-----END CERTIFICATE-----`n"
+  Set-Content -Path $path -Value $pem -Encoding ascii
+}
+
+function Enable-AzureCliCorporateCa {
+  if ($env:REQUESTS_CA_BUNDLE -and (Test-Path $env:REQUESTS_CA_BUNDLE)) {
+    Ok "Azure CLI CA bundle already set: $env:REQUESTS_CA_BUNDLE"
+    $env:CURL_CA_BUNDLE = $env:REQUESTS_CA_BUNDLE
+    return $true
+  }
+
+  $cert = Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root, Cert:\CurrentUser\CA, Cert:\LocalMachine\CA -ErrorAction SilentlyContinue |
+    Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
+
+  if (-not $cert) { return $false }
+
+  $bundleDir = Join-Path $env:USERPROFILE '.azure'
+  New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
+  $bundlePath = Join-Path $bundleDir 'adpai-zscaler-root-ca.pem'
+  Export-CertificateToPem $cert $bundlePath
+  $env:REQUESTS_CA_BUNDLE = $bundlePath
+  $env:CURL_CA_BUNDLE = $bundlePath
+  Ok "Azure CLI CA bundle set from Windows certificate store: $bundlePath"
+  return $true
+}
+
 function Get-AzureDevOpsExtensionInstallHelp ($output) {
   $details = (@($output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
   if (-not $details) { $details = 'az extension add returned a non-zero exit code.' }
+
+  if (Test-IsCertificateError $output) {
+    return @(
+      "Could not install Azure CLI extension 'azure-devops' because Azure CLI does not trust the corporate TLS inspection certificate.",
+      "Details: $details",
+      'Zscaler recovery:',
+      '1. Open a normal PowerShell window as the same Windows user, not Administrator.',
+      '2. Ask IT/security for the Zscaler root CA certificate in PEM/Base64 format, or export it from certmgr.msc.',
+      '3. Save it, for example: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
+      '4. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
+      '5. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
+      '6. Run: az extension add --name azure-devops --only-show-errors',
+      '7. Rerun this installer.'
+    ) -join [Environment]::NewLine
+  }
 
   return @(
     "Could not install Azure CLI extension 'azure-devops'.",
@@ -197,6 +248,10 @@ $extNames = @($extCheck.Output | ForEach-Object { "$_".Trim() } | Where-Object {
 if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
   Say "Installing 'azure-devops' Azure CLI extension"
   $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
+  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliCorporateCa)) {
+    Say "Retrying 'azure-devops' Azure CLI extension install with corporate CA bundle"
+    $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
+  }
   if ($addExt.ExitCode -ne 0) { Die (Get-AzureDevOpsExtensionInstallHelp $addExt.Output) }
 }
 
