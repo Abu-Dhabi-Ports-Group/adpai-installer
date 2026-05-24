@@ -75,8 +75,6 @@ function Enable-AzureCliDefaultCertStore ($azCmd) {
   $result = Invoke-Native $azCmd @('config', 'set', 'core.use_default_cert_store=true', '--only-show-errors')
   if ($result.ExitCode -ne 0) { return $false }
 
-  Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
-  Remove-Item Env:CURL_CA_BUNDLE -ErrorAction SilentlyContinue
   Ok 'Azure CLI configured to use the Windows/default certificate store'
   return $true
 }
@@ -325,16 +323,22 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("adpai-vsix-" + [System.Guid
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 try {
+  Enable-AzureCliCorporateCa | Out-Null
   Say "Downloading $Package@$Version from $Org/$Project/$Feed"
-  & $AzCmd artifacts universal download `
-    --organization $Org `
-    --project $Project `
-    --scope project `
-    --feed $Feed `
-    --name $Package `
-    --version $Version `
-    --path $tmp `
-    --only-show-errors
+  $download = Invoke-Native $AzCmd @(
+    'artifacts', 'universal', 'download',
+    '--organization', $Org,
+    '--project', $Project,
+    '--scope', 'project',
+    '--feed', $Feed,
+    '--name', $Package,
+    '--version', $Version,
+    '--path', $tmp,
+    '--only-show-errors'
+  )
+  if ($download.ExitCode -ne 0) {
+    Die "Could not download $Package@$Version from $Org/$Project/$Feed. $($download.Output -join ' ')"
+  }
 
   $vsix = Get-ChildItem -Path $tmp -Filter '*.vsix' -File | Select-Object -First 1
   if (-not $vsix) {
