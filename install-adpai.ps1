@@ -10,7 +10,7 @@
 #   iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
 #
 # Prerequisites:
-#   - Node 18+ (download from https://nodejs.org if missing)
+#   - Node 18+ (bootstrapped with winget, then Chocolatey fallback when missing)
 #   - Your AD Ports identity must have Feed Reader on the adpai feed:
 #       https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/settings/permissions
 
@@ -85,13 +85,67 @@ function Resolve-NpmGlobalCmd ($name) {
   }
   return $null
 }
+function Refresh-Path {
+  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $currentParts = @($env:Path -split ';' | Where-Object { $_ })
+  $refreshedParts = @((@($machinePath, $userPath) -join ';') -split ';' | Where-Object { $_ })
+  foreach ($part in $currentParts) {
+    if (-not ($refreshedParts | Where-Object { $_.TrimEnd('\') -ieq $part.TrimEnd('\') })) {
+      $refreshedParts += $part
+    }
+  }
+  $env:Path = ($refreshedParts -join ';')
+}
+function Install-WithPackageManager ($displayName, $wingetId, $chocoPackage) {
+  $winget = Resolve-Cmd 'winget'
+  if ($winget) {
+    Say "Installing $displayName with winget"
+    $result = Invoke-Native $winget @('install', '-e', '--id', $wingetId, '--silent', '--accept-package-agreements', '--accept-source-agreements')
+    if ($result.ExitCode -eq 0) { Refresh-Path; return $true }
+    Warn "winget could not install $displayName (exit $($result.ExitCode)); trying Chocolatey if available."
+  }
+
+  $choco = Resolve-Cmd 'choco'
+  if ($choco) {
+    Say "Installing $displayName with Chocolatey"
+    $result = Invoke-Native $choco @('install', $chocoPackage, '-y', '--no-progress')
+    if ($result.ExitCode -eq 0) { Refresh-Path; return $true }
+    Warn "Chocolatey could not install $displayName (exit $($result.ExitCode))."
+  }
+
+  return $false
+}
+
+function Ensure-NodeLts {
+  $script:NodeCmd = Resolve-Cmd 'node'
+  $script:NpmCmd = Resolve-Cmd 'npm'
+  $needsInstall = (-not $script:NodeCmd -or -not $script:NpmCmd)
+
+  if (-not $needsInstall) {
+    $nodeResult = Invoke-Native $script:NodeCmd @('-v')
+    $nodeLine = $nodeResult.Output | Where-Object { $_ -match '^v?\d+\.' } | Select-Object -First 1
+    if (-not $nodeLine) { Die "Node.js version output was not recognized: $($nodeResult.Output -join [Environment]::NewLine)" }
+    $nodeVer = $nodeLine.ToString().Trim().TrimStart('v')
+    $nodeMajor = [int]($nodeVer.Split('.')[0])
+    $needsInstall = $nodeMajor -lt 18
+  }
+
+  if ($needsInstall) {
+    if (-not (Install-WithPackageManager 'Node.js LTS' 'OpenJS.NodeJS.LTS' 'nodejs-lts')) {
+      Die 'Node.js 18+ and npm are required and could not be installed silently. Install Node 18+ from https://nodejs.org and re-run.'
+    }
+    $script:NodeCmd = Resolve-Cmd 'node'
+    $script:NpmCmd = Resolve-Cmd 'npm'
+  }
+
+  if (-not $script:NodeCmd) { Die 'Node.js not found after bootstrap. Open a new PowerShell window and re-run.' }
+  if (-not $script:NpmCmd) { Die 'npm not found after bootstrap. Open a new PowerShell window and re-run.' }
+}
 
 # ---------- Node ----------
 Say 'Checking Node.js + npm'
-$NodeCmd = Resolve-Cmd 'node'
-$NpmCmd = Resolve-Cmd 'npm'
-if (-not $NodeCmd) { Die 'Node.js not found. Install Node 18+ from https://nodejs.org and re-run.' }
-if (-not $NpmCmd) { Die 'npm not found. Install Node 18+ from https://nodejs.org and re-run.' }
+Ensure-NodeLts
 if ($env:NODE_EXTRA_CA_CERTS -and -not (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
   Warn "NODE_EXTRA_CA_CERTS points to a missing or inaccessible certificate: $env:NODE_EXTRA_CA_CERTS"
   Warn 'The installer will continue, but fix or unset NODE_EXTRA_CA_CERTS if npm TLS access fails.'

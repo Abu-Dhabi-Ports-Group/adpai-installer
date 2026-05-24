@@ -49,17 +49,19 @@ Invoke-Expression "$($script.Content); & { param([string]`$Version='2.0.1') }"
 
 ### What the VSIX installer does
 
-1. Verifies Azure CLI (`az`) and the `azure-devops` extension are present.
-2. Runs `az login` if no active session.
-3. Downloads the requested VSIX from the private `adpai-vsix` Azure Artifacts Universal feed.
-4. Runs `code --install-extension <vsix> --force`.
-5. Bootstraps the `@adports/aidev` CLI by chaining `install-adpai.{sh,ps1}` (skip with `--skip-cli` / `-SkipCli`).
+1. Bootstraps Azure CLI (`az`) when missing, using `winget` first and Chocolatey as fallback on Windows.
+2. Bootstraps the VS Code CLI (`code`) when missing, using `winget` first and Chocolatey as fallback on Windows.
+3. Installs the `azure-devops` extension for Azure CLI when missing.
+4. Runs `az login` if no active session.
+5. Downloads the requested VSIX from the private `adpai-vsix` Azure Artifacts Universal feed.
+6. Runs `code --install-extension <vsix> --force`.
+7. Bootstraps the `@adports/aidev` CLI by chaining `install-adpai.{sh,ps1}` (skip with `--skip-cli` / `-SkipCli`).
 
 The user must have **Feed Reader** on both the [`adpai-vsix` feed](https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix/settings/permissions) (VSIX) and the [`adpai` feed](https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/settings/permissions) (CLI). The scripts contain no secrets.
 
 ## What the CLI installer does
 
-1. Verify Node 18+ (offer to install via `brew`/`apt` if missing).
+1. Verify Node 18+ (bootstrap with `winget`/Chocolatey on Windows, offer `brew`/`apt` on macOS/Linux).
 2. Authenticate the user to the private adpai Azure Artifacts feed via SSO.
 3. Write feed credentials to `~/.npmrc`.
 4. Run `npm install -g @adports/aidev`.
@@ -74,6 +76,6 @@ The scripts contain no secrets. Each user authenticates with their own AD Ports 
 | `401 Unauthorized` on `npm view` | Confirm the user has **Feed Reader** on the adpai Azure Artifacts feed, then rerun the installer. |
 | `E404 registry.npmjs.org` | The `@adports` npm scope did not map to the private feed. Rerun the installer or add `@adports:registry=https://pkgs.dev.azure.com/abudhabiports/_packaging/adpai/npm/registry/` to `~/.npmrc`. |
 | `Ignoring extra certs from ... zscaler-root-ca.crt` | `NODE_EXTRA_CA_CERTS` points to a missing or inaccessible certificate. Fix the path or run `Remove-Item Env:NODE_EXTRA_CA_CERTS` for the current PowerShell session, then rerun the installer. |
-| `ERROR: 'az' not found` (VSIX installer) | Install Azure CLI: <https://aka.ms/installazurecli> (`winget install Microsoft.AzureCLI` on Windows, `brew install azure-cli` on macOS). |
+| `ERROR: 'az' not found` (VSIX installer) | Re-run in a new PowerShell window. The Windows installer bootstraps Azure CLI with `winget`/Chocolatey when available; if both package managers are unavailable, install Azure CLI from <https://aka.ms/installazurecli>. |
 | `ERROR: no .vsix found` after download | Confirm the requested version exists at <https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix>. Omit the version arg to grab the latest. |
-| `code: command not found` | In VS Code: Command Palette → **Shell Command: Install 'code' command in PATH**. |
+| `code: command not found` | Re-run in a new PowerShell window. The Windows installer bootstraps VS Code with `winget`/Chocolatey when available; if VS Code is already installed but PATH is stale, open VS Code and run Command Palette → **Shell Command: Install 'code' command in PATH**. |
