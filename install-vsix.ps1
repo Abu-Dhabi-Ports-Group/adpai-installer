@@ -5,7 +5,7 @@
 #   1. Azure CLI        (winget, then Chocolatey fallback)
 #   2. VS Code CLI      (winget, then Chocolatey fallback)
 #   3. DevOps extension (az extension add --name azure-devops)
-#   4. Sign in          (az login, interactive when required)
+#   4. Sign in          (az login, interactive when required, including Azure DevOps scope)
 #
 # Usage:
 #   pwsh install-vsix.ps1                       # latest version, also installs CLI
@@ -38,6 +38,11 @@ function Test-IsAdministrator {
 function Test-IsCertificateError ($output) {
   $details = (@($output) | ForEach-Object { "$_" }) -join ' '
   return ($details -match 'CERTIFICATE_VERIFY_FAILED|SSLCertVerificationError|unable to get local issuer certificate')
+}
+
+function Test-IsAzureDevOpsAuthError ($output) {
+  $details = (@($output) | ForEach-Object { "$_" }) -join ' '
+  return ($details -match 'Before you can run Azure DevOps commands|az devops login|setup credentials|VS30063|TF400813|Unauthorized|401')
 }
 
 function Export-CertificateToPem ($certificate, $path) {
@@ -175,6 +180,42 @@ function Invoke-Native ($filePath, $arguments) {
     ExitCode = $exitCode
     Output = @($output)
   }
+}
+
+function Ensure-AzureDevOpsAuth ($azCmd, $organizationUrl, $project) {
+  Enable-AzureCliCorporateCa | Out-Null
+
+  Invoke-Native $azCmd @(
+    'devops', 'configure',
+    '--defaults', "organization=$organizationUrl", "project=$project",
+    '--only-show-errors'
+  ) | Out-Null
+
+  $probe = Invoke-Native $azCmd @(
+    'devops', 'project', 'show',
+    '--organization', $organizationUrl,
+    '--project', $project,
+    '-o', 'none',
+    '--only-show-errors'
+  )
+  if ($probe.ExitCode -eq 0) { return }
+
+  if (Test-IsAzureDevOpsAuthError $probe.Output) {
+    Say "Azure DevOps sign-in required. Running 'az login' with Azure DevOps scope"
+    $login = Invoke-Native $azCmd @('login', '--scope', '499b84ac-1321-427f-aa17-267ca6975798/.default', '--only-show-errors')
+    if ($login.ExitCode -ne 0) { Die "Azure DevOps scoped login failed. $($login.Output -join ' ')" }
+
+    $probe = Invoke-Native $azCmd @(
+      'devops', 'project', 'show',
+      '--organization', $organizationUrl,
+      '--project', $project,
+      '-o', 'none',
+      '--only-show-errors'
+    )
+    if ($probe.ExitCode -eq 0) { return }
+  }
+
+  Die "Azure DevOps authentication failed for $organizationUrl/$project. Run 'az login --scope 499b84ac-1321-427f-aa17-267ca6975798/.default' or 'az devops login', then rerun this installer. $($probe.Output -join ' ')"
 }
 
 function Resolve-Cmd ($name) {
@@ -318,6 +359,8 @@ if ($account.ExitCode -ne 0) {
   $login = Invoke-Native $AzCmd @('login', '--only-show-errors')
   if ($login.ExitCode -ne 0) { Die "Azure login failed. $($login.Output -join ' ')" }
 }
+
+Ensure-AzureDevOpsAuth $AzCmd $Org $Project
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("adpai-vsix-" + [System.Guid]::NewGuid())
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
