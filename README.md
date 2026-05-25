@@ -44,6 +44,14 @@ iwr -useb https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-
 code --install-extension .\adp-ai-sdlc-latest.vsix --force
 ```
 
+GitHub direct download works:
+
+- Latest VSIX: https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-ai-sdlc-latest.vsix
+- Versioned VSIX: https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-ai-sdlc-1.1.69.vsix
+- Verified local install: `adports.adp-ai-sdlc@1.1.69`
+
+After downloading the `.vsix`, double-click may open VS Code and start installation if Windows has `.vsix` associated with VS Code. The most reliable install path is: in VS Code, open **Extensions**, choose **Install from VSIX...**, and select the downloaded file. You can also run `code --install-extension .\adp-ai-sdlc-latest.vsix --force` from PowerShell in the download folder.
+
 The direct VSIX installs only the VS Code extension. Run the CLI installer separately if you also need `adpai` on the command line:
 
 ```powershell
