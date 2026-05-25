@@ -35,6 +35,21 @@ Windows (PowerShell):
 iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-vsix.ps1 | iex
 ```
 
+### Direct VSIX download fallback
+
+If the installer command is blocked by Azure CLI, corporate TLS, or Azure Artifacts access issues, download the latest VSIX directly from GitHub and install it with the VS Code CLI:
+
+```powershell
+iwr -useb https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-ai-sdlc-latest.vsix -OutFile adp-ai-sdlc-latest.vsix
+code --install-extension .\adp-ai-sdlc-latest.vsix --force
+```
+
+The direct VSIX installs only the VS Code extension. Run the CLI installer separately if you also need `adpai` on the command line:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
+```
+
 Install a specific version:
 
 ```bash
