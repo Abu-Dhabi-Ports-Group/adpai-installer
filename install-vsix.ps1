@@ -27,7 +27,7 @@ $CliInstallerUrl = 'https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpa
 function Say  ($m) { Write-Host ">> $m" -ForegroundColor Cyan }
 function Ok   ($m) { Write-Host "OK $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m" -ForegroundColor Yellow }
-function Die  ($m) { throw "ERROR $m" }
+function Die  ($m) { Write-Host "X  $m" -ForegroundColor Red; exit 1 }
 
 function Test-IsAdministrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -72,9 +72,8 @@ function Enable-AzureCliCorporateCa ([switch]$Force) {
   $certificates = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root, Cert:\CurrentUser\CA, Cert:\LocalMachine\CA -ErrorAction SilentlyContinue |
     Where-Object { $_.NotAfter -gt (Get-Date) } |
     Sort-Object Thumbprint -Unique)
-  $zscalerCert = $certificates | Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } | Select-Object -First 1
 
-  if (-not $zscalerCert) {
+  if (-not $certificates -or $certificates.Count -eq 0) {
     if ($env:REQUESTS_CA_BUNDLE -and (Test-Path $env:REQUESTS_CA_BUNDLE)) {
       Ok "Azure CLI CA bundle already set: $env:REQUESTS_CA_BUNDLE"
       $env:CURL_CA_BUNDLE = $env:REQUESTS_CA_BUNDLE
@@ -85,9 +84,22 @@ function Enable-AzureCliCorporateCa ([switch]$Force) {
 
   New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
   Export-CertificatesToPem $certificates $bundlePath
+
+  # Process scope: take effect immediately for this run.
   $env:REQUESTS_CA_BUNDLE = $bundlePath
-  $env:CURL_CA_BUNDLE = $bundlePath
-  Ok "Azure CLI CA bundle set from Windows certificate store: $bundlePath"
+  $env:CURL_CA_BUNDLE     = $bundlePath
+  $env:NODE_EXTRA_CA_CERTS = $bundlePath
+  $env:SSL_CERT_FILE      = $bundlePath
+
+  # User scope: persist so re-runs and child tools (VS Code, extensions) trust the bundle.
+  try {
+    [Environment]::SetEnvironmentVariable('REQUESTS_CA_BUNDLE',  $bundlePath, 'User')
+    [Environment]::SetEnvironmentVariable('CURL_CA_BUNDLE',      $bundlePath, 'User')
+    [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $bundlePath, 'User')
+    [Environment]::SetEnvironmentVariable('SSL_CERT_FILE',       $bundlePath, 'User')
+  } catch { }
+
+  Ok "Exported $($certificates.Count) Windows CA certs to $bundlePath (REQUESTS_CA_BUNDLE + CURL_CA_BUNDLE + NODE_EXTRA_CA_CERTS + SSL_CERT_FILE, persisted to user env)."
   return $true
 }
 
@@ -349,6 +361,9 @@ function Ensure-VsCodeCli {
 $AzCmd = Ensure-AzureCli
 $CodeCmd = Ensure-VsCodeCli
 
+# Proactively trust the corporate TLS chain (Zscaler etc.) before any az call.
+Enable-AzureCliCorporateCa | Out-Null
+
 if (Test-IsAdministrator) {
   Warn 'Running as Administrator is not recommended. Azure CLI extensions are installed per user and can fail with profile or ownership errors. Use a normal PowerShell window unless a prerequisite installer explicitly asks for elevation.'
 }
@@ -388,20 +403,19 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 try {
   Enable-AzureCliCorporateCa | Out-Null
-  Say "Downloading $Package@$Version from $Org/$Project/$Feed"
-  $download = Invoke-Native $AzCmd @(
-    'artifacts', 'universal', 'download',
-    '--organization', $Org,
-    '--project', $Project,
-    '--scope', 'project',
-    '--feed', $Feed,
-    '--name', $Package,
-    '--version', $Version,
-    '--path', $tmp,
-    '--only-show-errors'
-  )
-  if ($download.ExitCode -ne 0) {
-    Die "Could not download $Package@$Version from $Org/$Project/$Feed. $($download.Output -join ' ')"
+  Say "Downloading $Package@$Version from $Org/$Project/$Feed (a few MB; progress is shown below)"
+  # Stream az output directly so the user sees download progress instead of a stalled prompt.
+  & $AzCmd artifacts universal download `
+    --organization $Org `
+    --project $Project `
+    --scope project `
+    --feed $Feed `
+    --name $Package `
+    --version $Version `
+    --path $tmp
+  $downloadExit = $LASTEXITCODE
+  if ($downloadExit -ne 0) {
+    Die "Could not download $Package@$Version from $Org/$Project/$Feed (az exit $downloadExit). Check the output above for the specific error."
   }
 
   $vsix = Get-ChildItem -Path $tmp -Filter '*.vsix' -File | Select-Object -First 1
