@@ -316,11 +316,26 @@ $($viewResult.Output -join [Environment]::NewLine)
 Ok "Feed reachable - latest $Pkg = $ver"
 
 Say "Installing $Pkg globally (2-5 minutes is normal on corporate networks)"
-# Stream npm output live so the user sees progress instead of a silent terminal.
-& $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+# Stream npm output live AND tee to a log so we can detect TLS interception
+# on registry.npmjs.org / dependency CDNs (even when the feed itself works).
+$installLog = Join-Path $tempRoot "adpai-npm-install-$([guid]::NewGuid().ToString('N')).log"
+& $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http 2>&1 | Tee-Object -FilePath $installLog
 $installExit = $LASTEXITCODE
+
 if ($installExit -ne 0) {
-  Die "Failed to install $Pkg globally (npm exit $installExit). Re-run with `--loglevel=verbose` for full output: npm install -g $Pkg --loglevel=verbose"
+  $installOutput = Get-Content -Path $installLog -ErrorAction SilentlyContinue
+  if (Test-IsTlsInterception $installOutput) {
+    Warn "npm dependency fetch failed with corporate TLS interception (registry.npmjs.org chain re-signed)."
+    Repair-CorporateTls
+    Say "Retrying $Pkg install after TLS auto-fix (this picks up the new NODE_EXTRA_CA_CERTS / npm cafile for child npm processes)."
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http 2>&1 | Tee-Object -FilePath $installLog
+    $installExit = $LASTEXITCODE
+  }
+}
+Remove-Item -Path $installLog -ErrorAction SilentlyContinue
+
+if ($installExit -ne 0) {
+  Die "Failed to install $Pkg globally (npm exit $installExit). Re-run with ``--loglevel=verbose`` for full output: npm install -g $Pkg --loglevel=verbose"
 }
 $AdpaiCmd = Resolve-NpmGlobalCmd 'adpai'
 if ($AdpaiCmd) {
