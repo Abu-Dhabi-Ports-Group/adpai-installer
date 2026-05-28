@@ -39,8 +39,7 @@ function Repair-CorporateTls {
   #   2. NODE_EXTRA_CA_CERTS=<bundle>  -> fallback / belt-and-braces: a PEM
   #      file containing every trusted root + intermediate from the Windows
   #      store, used by Node and by npm's own HTTPS client.
-  Warn 'TLS interception detected (corporate proxy / Zscaler re-signed the feed cert).'
-  Say 'Applying auto-fix: NODE_OPTIONS=--use-system-ca + NODE_EXTRA_CA_CERTS=<windows cert bundle> (this PowerShell + persistent user scope).'
+  Say 'Ensuring npm/Node trust the Windows corporate TLS chain (NODE_OPTIONS=--use-system-ca + NODE_EXTRA_CA_CERTS=<windows cert bundle>).'
 
   $existing = [Environment]::GetEnvironmentVariable('NODE_OPTIONS', 'User')
   if ($existing -and ($existing -notmatch '--use-system-ca')) {
@@ -316,6 +315,10 @@ $($viewResult.Output -join [Environment]::NewLine)
 Ok "Feed reachable - latest $Pkg = $ver"
 
 Say "Installing $Pkg globally (2-5 minutes is normal on corporate networks)"
+# Ensure npm dependency fetches from registry.npmjs.org trust corporate TLS
+# inspection before the first install attempt. Feed auth success only proves the
+# Azure Artifacts token works; public dependencies use a different TLS chain.
+Repair-CorporateTls
 # Stream npm output live (no pipe / no Tee, those buffer the npm http fetch lines).
 $oldErrorActionPreference = $ErrorActionPreference
 try {
