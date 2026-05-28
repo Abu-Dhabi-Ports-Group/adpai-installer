@@ -1,4 +1,4 @@
-﻿# AD Ports — install @adports/aidev (Windows PowerShell)
+# AD Ports - install @adports/aidev (Windows PowerShell)
 #
 # This script is publicly hosted at https://github.com/Abu-Dhabi-Ports-Group/adpai-installer
 # so any AD Ports developer can run it without cloning the ai-skills repo.
@@ -21,10 +21,10 @@ $FeedUrl          = "https:$FeedRegistryHost"
 $Pkg              = '@adports/aidev'
 $Npmrc            = Join-Path $HOME '.npmrc'
 
-function Say  ($m) { Write-Host "▸ $m" -ForegroundColor Cyan }
-function Ok   ($m) { Write-Host "✓ $m" -ForegroundColor Green }
+function Say  ($m) { Write-Host "> $m" -ForegroundColor Cyan }
+function Ok   ($m) { Write-Host "OK $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "! $m" -ForegroundColor Yellow }
-function Die  ($m) { Write-Host "✗ $m" -ForegroundColor Red; exit 1 }
+function Die  ($m) { Write-Host "X $m" -ForegroundColor Red; exit 1 }
 function Invoke-Native ($filePath, $arguments) {
   $oldErrorActionPreference = $ErrorActionPreference
   $nativePreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue
@@ -238,7 +238,7 @@ npm output:
 $($viewResult.Output -join [Environment]::NewLine)
 "@
 }
-Ok "Feed reachable — latest $Pkg = $ver"
+Ok "Feed reachable - latest $Pkg = $ver"
 
 Say "Installing $Pkg globally"
 $installResult = Invoke-Native $NpmCmd @('install', '-g', $Pkg)
