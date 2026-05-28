@@ -25,6 +25,47 @@ function Say  ($m) { Write-Host "> $m" -ForegroundColor Cyan }
 function Ok   ($m) { Write-Host "OK $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "! $m" -ForegroundColor Yellow }
 function Die  ($m) { Write-Host "X $m" -ForegroundColor Red; exit 1 }
+function Test-IsTlsInterception ($output) {
+  $details = (@($output) | ForEach-Object { "$_" }) -join ' '
+  return ($details -match 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY|unable to get local issuer certificate|SELF_SIGNED_CERT_IN_CHAIN|self.signed certificate|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID')
+}
+function Repair-CorporateTls {
+  # Corporate proxies (e.g. Zscaler) re-sign TLS, but Node ships its own CA
+  # bundle and does not trust the Windows certificate store by default. Tell
+  # Node to use OpenSSL's CA store (which on Windows reads from the system
+  # cert store) for both this process and future user sessions.
+  Warn 'TLS interception detected (corporate proxy / Zscaler re-signed the feed cert).'
+  Say 'Applying auto-fix: NODE_OPTIONS=--use-openssl-ca (this PowerShell + persistent user scope).'
+  $existing = [Environment]::GetEnvironmentVariable('NODE_OPTIONS', 'User')
+  if ($existing -and ($existing -notmatch '--use-openssl-ca')) {
+    $combined = ($existing.Trim() + ' --use-openssl-ca').Trim()
+  } elseif (-not $existing) {
+    $combined = '--use-openssl-ca'
+  } else {
+    $combined = $existing
+  }
+  [Environment]::SetEnvironmentVariable('NODE_OPTIONS', $combined, 'User')
+  $env:NODE_OPTIONS = $combined
+
+  # Optional second layer: export the Zscaler root from the Windows store and
+  # point Node at it explicitly via NODE_EXTRA_CA_CERTS. Belt-and-braces for
+  # cases where --use-openssl-ca alone is not enough.
+  try {
+    $cert = Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+      Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } |
+      Select-Object -First 1
+    if ($cert) {
+      $pem = Join-Path $HOME 'zscaler-root.pem'
+      $b64 = [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
+      Set-Content -Path $pem -Value "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----" -Encoding ascii
+      [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $pem, 'User')
+      $env:NODE_EXTRA_CA_CERTS = $pem
+      Ok "Exported corporate root to $pem and set NODE_EXTRA_CA_CERTS."
+    }
+  } catch {
+    Warn "Could not auto-export corporate root cert: $($_.Exception.Message)"
+  }
+}
 function Invoke-Native ($filePath, $arguments) {
   $oldErrorActionPreference = $ErrorActionPreference
   $nativePreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue
@@ -228,7 +269,26 @@ if (Test-Path $Npmrc) {
 Say 'Verifying feed access'
 $viewResult = Invoke-Native $NpmCmd @('view', $Pkg, 'version')
 $ver = $viewResult.Output | Where-Object { $_ -notmatch '^npm warn' -and $_ -match '^\d+\.' } | Select-Object -First 1
+if (($viewResult.ExitCode -ne 0 -or -not $ver) -and (Test-IsTlsInterception $viewResult.Output)) {
+  Repair-CorporateTls
+  Say 'Retrying feed access after TLS auto-fix'
+  $viewResult = Invoke-Native $NpmCmd @('view', $Pkg, 'version')
+  $ver = $viewResult.Output | Where-Object { $_ -notmatch '^npm warn' -and $_ -match '^\d+\.' } | Select-Object -First 1
+}
 if ($viewResult.ExitCode -ne 0 -or -not $ver) {
+  if (Test-IsTlsInterception $viewResult.Output) {
+    Die @"
+Feed access failed because Node.js does not trust the corporate TLS root (Zscaler).
+The auto-fix did not stick. Run these two lines in PowerShell, then re-run the installer:
+
+    [Environment]::SetEnvironmentVariable('NODE_OPTIONS','--use-openssl-ca','User')
+    # close ALL PowerShell windows, open a fresh one, then:
+    iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
+
+npm output:
+$($viewResult.Output -join [Environment]::NewLine)
+"@
+  }
   Die @"
 Feed access failed. Most likely: your AD Ports identity is missing 'Feed Reader' on the adpai feed.
 Ask the admin to grant access at:
