@@ -1,4 +1,4 @@
-# AD Ports — install @adports/aidev (Windows PowerShell)
+﻿# AD Ports — install @adports/aidev (Windows PowerShell)
 #
 # This script is publicly hosted at https://github.com/Abu-Dhabi-Ports-Group/adpai-installer
 # so any AD Ports developer can run it without cloning the ai-skills repo.
