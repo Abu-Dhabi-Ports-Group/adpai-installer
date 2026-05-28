@@ -317,8 +317,14 @@ Ok "Feed reachable - latest $Pkg = $ver"
 
 Say "Installing $Pkg globally (2-5 minutes is normal on corporate networks)"
 # Stream npm output live (no pipe / no Tee, those buffer the npm http fetch lines).
-& $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
-$installExit = $LASTEXITCODE
+$oldErrorActionPreference = $ErrorActionPreference
+try {
+  $ErrorActionPreference = 'Continue'
+  & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+  $installExit = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $oldErrorActionPreference
+}
 
 if ($installExit -ne 0) {
   # Could be corporate TLS interception on registry.npmjs.org / dep CDNs.
@@ -326,8 +332,14 @@ if ($installExit -ne 0) {
   Warn "npm install failed (exit $installExit). Attempting corporate-TLS auto-fix and one retry."
   Repair-CorporateTls
   Say "Retrying $Pkg install (child npm processes will pick up NODE_EXTRA_CA_CERTS + npm cafile)."
-  & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
-  $installExit = $LASTEXITCODE
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+    $installExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
 }
 
 if ($installExit -ne 0) {
