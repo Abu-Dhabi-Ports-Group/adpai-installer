@@ -300,10 +300,12 @@ $($viewResult.Output -join [Environment]::NewLine)
 }
 Ok "Feed reachable - latest $Pkg = $ver"
 
-Say "Installing $Pkg globally"
-$installResult = Invoke-Native $NpmCmd @('install', '-g', $Pkg)
-if ($installResult.ExitCode -ne 0) {
-  Die "Failed to install $Pkg globally: $($installResult.Output -join [Environment]::NewLine)"
+Say "Installing $Pkg globally (2-5 minutes is normal on corporate networks)"
+# Stream npm output live so the user sees progress instead of a silent terminal.
+& $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+$installExit = $LASTEXITCODE
+if ($installExit -ne 0) {
+  Die "Failed to install $Pkg globally (npm exit $installExit). Re-run with `--loglevel=verbose` for full output: npm install -g $Pkg --loglevel=verbose"
 }
 $AdpaiCmd = Resolve-NpmGlobalCmd 'adpai'
 if ($AdpaiCmd) {
