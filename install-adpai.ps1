@@ -31,39 +31,54 @@ function Test-IsTlsInterception ($output) {
 }
 function Repair-CorporateTls {
   # Corporate proxies (e.g. Zscaler) re-sign TLS, but Node ships its own CA
-  # bundle and does not trust the Windows certificate store by default. Tell
-  # Node to use OpenSSL's CA store (which on Windows reads from the system
-  # cert store) for both this process and future user sessions.
+  # bundle and does not trust the Windows certificate store by default.
+  # Two layers, both needed for full npm coverage (feed + registry.npmjs.org
+  # + dependency hosts):
+  #   1. NODE_OPTIONS=--use-system-ca  -> Node reads the Windows cert store
+  #      directly. Available on Node 22.10+.
+  #   2. NODE_EXTRA_CA_CERTS=<bundle>  -> fallback / belt-and-braces: a PEM
+  #      file containing every trusted root + intermediate from the Windows
+  #      store, used by Node and by npm's own HTTPS client.
   Warn 'TLS interception detected (corporate proxy / Zscaler re-signed the feed cert).'
-  Say 'Applying auto-fix: NODE_OPTIONS=--use-openssl-ca (this PowerShell + persistent user scope).'
+  Say 'Applying auto-fix: NODE_OPTIONS=--use-system-ca + NODE_EXTRA_CA_CERTS=<windows cert bundle> (this PowerShell + persistent user scope).'
+
   $existing = [Environment]::GetEnvironmentVariable('NODE_OPTIONS', 'User')
-  if ($existing -and ($existing -notmatch '--use-openssl-ca')) {
-    $combined = ($existing.Trim() + ' --use-openssl-ca').Trim()
+  if ($existing -and ($existing -notmatch '--use-system-ca')) {
+    $combined = (($existing -replace '--use-openssl-ca','').Trim() + ' --use-system-ca').Trim()
   } elseif (-not $existing) {
-    $combined = '--use-openssl-ca'
+    $combined = '--use-system-ca'
   } else {
     $combined = $existing
   }
   [Environment]::SetEnvironmentVariable('NODE_OPTIONS', $combined, 'User')
   $env:NODE_OPTIONS = $combined
 
-  # Optional second layer: export the Zscaler root from the Windows store and
-  # point Node at it explicitly via NODE_EXTRA_CA_CERTS. Belt-and-braces for
-  # cases where --use-openssl-ca alone is not enough.
+  # Export every trusted root + CA from the Windows store into one PEM bundle.
+  # This catches Zscaler AND any intermediate that npmjs.org / dependency CDNs
+  # are re-signed under.
   try {
-    $cert = Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
-      Where-Object { $_.Subject -match 'Zscaler' -or $_.Issuer -match 'Zscaler' -or $_.FriendlyName -match 'Zscaler' } |
-      Select-Object -First 1
-    if ($cert) {
-      $pem = Join-Path $HOME 'zscaler-root.pem'
-      $b64 = [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
-      Set-Content -Path $pem -Value "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----" -Encoding ascii
-      [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $pem, 'User')
-      $env:NODE_EXTRA_CA_CERTS = $pem
-      Ok "Exported corporate root to $pem and set NODE_EXTRA_CA_CERTS."
+    $bundle = Join-Path $HOME 'adpai-windows-ca-bundle.pem'
+    $certs = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root, Cert:\CurrentUser\CA, Cert:\LocalMachine\CA -ErrorAction SilentlyContinue |
+      Where-Object { $_.NotAfter -gt (Get-Date) } |
+      Sort-Object Thumbprint -Unique)
+    if ($certs.Count -gt 0) {
+      $blocks = foreach ($cert in $certs) {
+        try {
+          $b64 = [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
+          "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----"
+        } catch { $null }
+      }
+      Set-Content -Path $bundle -Value (($blocks | Where-Object { $_ }) -join "`n") -Encoding ascii
+      [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $bundle, 'User')
+      $env:NODE_EXTRA_CA_CERTS = $bundle
+      # Belt: also tell npm directly (independent of Node's TLS path).
+      $null = Invoke-Native $NpmCmd @('config', 'set', 'cafile', $bundle)
+      Ok "Exported $($certs.Count) Windows CA certs to $bundle (NODE_EXTRA_CA_CERTS + npm cafile)."
+    } else {
+      Warn 'Found no certificates in the Windows trust store to export.'
     }
   } catch {
-    Warn "Could not auto-export corporate root cert: $($_.Exception.Message)"
+    Warn "Could not export Windows CA bundle: $($_.Exception.Message)"
   }
 }
 function Invoke-Native ($filePath, $arguments) {
@@ -281,7 +296,7 @@ if ($viewResult.ExitCode -ne 0 -or -not $ver) {
 Feed access failed because Node.js does not trust the corporate TLS root (Zscaler).
 The auto-fix did not stick. Run these two lines in PowerShell, then re-run the installer:
 
-    [Environment]::SetEnvironmentVariable('NODE_OPTIONS','--use-openssl-ca','User')
+    [Environment]::SetEnvironmentVariable('NODE_OPTIONS','--use-system-ca','User')
     # close ALL PowerShell windows, open a fresh one, then:
     iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
 
