@@ -1,11 +1,12 @@
 # Install the latest ADP AI SDLC VS Code extension from the
 # Azure Artifacts Universal feed (Foundations / adpai-vsix).
 #
-# Prerequisites are bootstrapped when possible:
-#   1. Azure CLI        (winget, then Chocolatey fallback)
-#   2. VS Code CLI      (winget, then Chocolatey fallback)
+# Prerequisites are checked before install, but not silently installed:
+#   1. Azure CLI        (az)
+#   2. VS Code CLI      (code)
 #   3. DevOps extension (az extension add --name azure-devops)
 #   4. Sign in          (az login, interactive when required, including Azure DevOps scope)
+# The @adports/aidev CLI bootstrap still runs automatically unless -SkipCli is set.
 #
 # Usage:
 #   pwsh install-vsix.ps1                       # latest version, also installs CLI
@@ -27,7 +28,7 @@ $CliInstallerUrl = 'https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpa
 function Say  ($m) { Write-Host ">> $m" -ForegroundColor Cyan }
 function Ok   ($m) { Write-Host "OK $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m" -ForegroundColor Yellow }
-function Die  ($m) { Write-Host "X  $m" -ForegroundColor Red; exit 1 }
+function Die  ($m) { Write-Host "X  $m" -ForegroundColor Red; throw $m }
 
 function Test-IsAdministrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -109,78 +110,6 @@ function Enable-AzureCliDefaultCertStore ($azCmd) {
 
   Ok 'Azure CLI configured to use the Windows/default certificate store'
   return $true
-}
-
-function Install-AzureDevOpsExtensionFromLocalWheel ($azCmd) {
-  $indexUri = 'https://aka.ms/azure-cli-extension-index-v1'
-  $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("adpai-azext-" + [System.Guid]::NewGuid())
-  New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-
-  try {
-    Say "Downloading Azure DevOps Azure CLI extension metadata with PowerShell"
-    $index = Invoke-RestMethod -UseBasicParsing -Uri $indexUri
-    $entries = @($index.extensions.'azure-devops')
-    if ($entries.Count -eq 0) { return $false }
-
-    $entry = $entries |
-      Sort-Object @{ Expression = { [version]$_.metadata.version }; Descending = $true } |
-      Select-Object -First 1
-    if (-not $entry.downloadUrl -or -not $entry.filename) { return $false }
-
-    $wheel = Join-Path $tmpDir $entry.filename
-    Say "Downloading $($entry.filename) with PowerShell"
-    Invoke-WebRequest -UseBasicParsing -Uri $entry.downloadUrl -OutFile $wheel
-
-    if ($entry.sha256Digest) {
-      $actualHash = (Get-FileHash -Algorithm SHA256 -Path $wheel).Hash.ToLowerInvariant()
-      if ($actualHash -ne $entry.sha256Digest.ToLowerInvariant()) {
-        Warn "Downloaded extension hash did not match the Azure CLI index; skipping local wheel fallback."
-        return $false
-      }
-    }
-
-    Say "Installing 'azure-devops' Azure CLI extension from local wheel"
-    $install = Invoke-Native $azCmd @('extension', 'add', '--source', $wheel, '--yes', '--only-show-errors')
-    return ($install.ExitCode -eq 0)
-  } catch {
-    Warn "PowerShell local wheel fallback failed: $($_.Exception.Message)"
-    return $false
-  } finally {
-    Remove-Item -Recurse -Force -Path $tmpDir -ErrorAction SilentlyContinue
-  }
-}
-
-function Get-AzureDevOpsExtensionInstallHelp ($output) {
-  $details = (@($output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
-  if (-not $details) { $details = 'az extension add returned a non-zero exit code.' }
-
-  if (Test-IsCertificateError $output) {
-    return @(
-      "Could not install Azure CLI extension 'azure-devops' because Azure CLI does not trust the corporate TLS inspection certificate.",
-      "Details: $details",
-      'Zscaler recovery:',
-      '1. Open a normal PowerShell window as the same Windows user, not Administrator.',
-      '2. Ask IT/security for the Zscaler root CA certificate in PEM/Base64 format, or export it from certmgr.msc.',
-      '3. Preferred Windows fix: az config set core.use_default_cert_store=true',
-      '4. Alternative: download the azure-devops .whl with PowerShell from https://aka.ms/azure-cli-extension-index-v1 and install it with az extension add --source <wheel>.',
-      '5. If using a PEM file instead, save it for example as: $env:USERPROFILE\.azure\zscaler-root-ca.pem',
-      '6. Run: $env:REQUESTS_CA_BUNDLE="$env:USERPROFILE\.azure\zscaler-root-ca.pem"',
-      '7. Run: $env:CURL_CA_BUNDLE=$env:REQUESTS_CA_BUNDLE',
-      '8. Run: az extension add --name azure-devops --only-show-errors',
-      '9. Rerun this installer.'
-    ) -join [Environment]::NewLine
-  }
-
-  return @(
-    "Could not install Azure CLI extension 'azure-devops'.",
-    "Details: $details",
-    'Recovery:',
-    '1. Close this Administrator PowerShell window and open a normal PowerShell as the same Windows user.',
-    '2. Run: az extension add --name azure-devops --only-show-errors',
-    '3. If Azure CLI reports azext_metadata.json is owned by another account, run:',
-    '   Remove-Item -Recurse -Force "$env:USERPROFILE\.azure\cliextensions\azure-devops"',
-    '   Then run step 2 again and rerun this installer.'
-  ) -join [Environment]::NewLine
 }
 
 function Invoke-Native ($filePath, $arguments) {
@@ -278,39 +207,6 @@ function Add-PathIfExists ($path) {
   }
 }
 
-function Refresh-Path {
-  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  $currentParts = @($env:Path -split ';' | Where-Object { $_ })
-  $refreshedParts = @((@($machinePath, $userPath) -join ';') -split ';' | Where-Object { $_ })
-  foreach ($part in $currentParts) {
-    if (-not ($refreshedParts | Where-Object { $_.TrimEnd('\') -ieq $part.TrimEnd('\') })) {
-      $refreshedParts += $part
-    }
-  }
-  $env:Path = ($refreshedParts -join ';')
-}
-
-function Install-WithPackageManager ($displayName, $wingetId, $chocoPackage) {
-  $winget = Resolve-Cmd 'winget'
-  if ($winget) {
-    Say "Installing $displayName with winget"
-    $result = Invoke-Native $winget @('install', '-e', '--id', $wingetId, '--silent', '--accept-package-agreements', '--accept-source-agreements')
-    if ($result.ExitCode -eq 0) { Refresh-Path; return $true }
-    Warn "winget could not install $displayName (exit $($result.ExitCode)); trying Chocolatey if available."
-  }
-
-  $choco = Resolve-Cmd 'choco'
-  if ($choco) {
-    Say "Installing $displayName with Chocolatey"
-    $result = Invoke-Native $choco @('install', $chocoPackage, '-y', '--no-progress')
-    if ($result.ExitCode -eq 0) { Refresh-Path; return $true }
-    Warn "Chocolatey could not install $displayName (exit $($result.ExitCode))."
-  }
-
-  return $false
-}
-
 function Resolve-CodeCli {
   $cmd = Resolve-Cmd 'code'
   if ($cmd) { return $cmd }
@@ -334,28 +230,93 @@ function Ensure-AzureCli {
   $cmd = Resolve-Cmd 'az'
   if ($cmd) { Ok 'Azure CLI ready'; return $cmd }
 
-  if (-not (Install-WithPackageManager 'Azure CLI' 'Microsoft.AzureCLI' 'azure-cli')) {
-    Die 'Azure CLI is required and could not be installed silently. Install it from https://aka.ms/installazurecli and re-run.'
-  }
-
-  $cmd = Resolve-Cmd 'az'
-  if (-not $cmd) { Die 'Azure CLI installed, but az is still not on PATH. Open a new PowerShell window and re-run.' }
-  Ok 'Azure CLI ready'
-  return $cmd
+  Die @(
+    "Azure CLI ('az') is required before this installer can download the private VSIX.",
+    'Install Azure CLI using your corporate Software Center / Company Portal, or ask IT to deploy it.',
+    'If your workstation allows user-scope winget installs, you can try:',
+    '    winget install -e --id Microsoft.AzureCLI --scope user',
+    'Official install guidance:',
+    '    https://aka.ms/installazurecli',
+    'After installing, open a new normal PowerShell window and verify:',
+    '    az version',
+    'Then rerun this installer.'
+  ) -join [Environment]::NewLine
 }
 
 function Ensure-VsCodeCli {
   $cmd = Resolve-CodeCli
   if ($cmd) { Ok 'VS Code CLI ready'; return $cmd }
 
-  if (-not (Install-WithPackageManager 'Visual Studio Code' 'Microsoft.VisualStudioCode' 'vscode')) {
-    Die "VS Code CLI 'code' is required and could not be installed silently. Install VS Code and re-run."
+  Die @(
+    "VS Code CLI ('code') is required before this installer can install the VSIX.",
+    'Install Visual Studio Code using your corporate Software Center / Company Portal, or ask IT to deploy it.',
+    'If your workstation allows user-scope winget installs, you can try:',
+    '    winget install -e --id Microsoft.VisualStudioCode --scope user',
+    'If VS Code is already installed, close and reopen PowerShell so PATH refreshes, then verify:',
+    '    code --version',
+    'Then rerun this installer.'
+  ) -join [Environment]::NewLine
+}
+
+function Ensure-AzureDevOpsExtension ($azCmd) {
+  $extCheck = Invoke-Native $azCmd @('extension', 'list', '--query', "[?name=='azure-devops'].name", '-o', 'tsv')
+  $extNames = @($extCheck.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+  if ($extCheck.ExitCode -eq 0 -and ($extNames -contains 'azure-devops')) {
+    Ok "Azure CLI extension 'azure-devops' ready"
+    return
   }
 
-  $cmd = Resolve-CodeCli
-  if (-not $cmd) { Die "VS Code installed, but 'code' is still not available. Open VS Code and run 'Shell Command: Install code command in PATH', then re-run." }
-  Ok 'VS Code CLI ready'
-  return $cmd
+  $details = (@($extCheck.Output) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' '
+  if (-not $details) { $details = "Azure CLI extension 'azure-devops' is not installed." }
+
+  Die @(
+    "Azure CLI extension 'azure-devops' is required before this installer can download the private VSIX.",
+    "Details: $details",
+    'Install it in a normal PowerShell window, then rerun this installer:',
+    '    az extension add --name azure-devops --only-show-errors',
+    'If corporate TLS inspection blocks the install, run:',
+    '    az config set core.use_default_cert_store=true',
+    '    az extension add --name azure-devops --only-show-errors'
+  ) -join [Environment]::NewLine
+}
+
+function Resolve-PowerShellHost {
+  $exeName = if ($env:OS -eq 'Windows_NT') {
+    if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+  } else {
+    'pwsh'
+  }
+  $currentHost = Join-Path $PSHOME $exeName
+  if (Test-Path $currentHost) { return $currentHost }
+
+  $cmd = Resolve-Cmd 'pwsh'
+  if ($cmd) { return $cmd }
+  return (Resolve-Cmd 'powershell')
+}
+
+function Invoke-AdpaiCliBootstrap {
+  $powerShellCmd = Resolve-PowerShellHost
+  if (-not $powerShellCmd) {
+    Warn "Could not find a PowerShell host to run the CLI bootstrap. Run it manually: iwr -useb $CliInstallerUrl | iex"
+    return 1
+  }
+
+  $cliScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("install-adpai-" + [System.Guid]::NewGuid() + ".ps1")
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $CliInstallerUrl -OutFile $cliScriptPath
+    $arguments = @('-NoProfile')
+    if ($env:OS -eq 'Windows_NT') {
+      $arguments += @('-ExecutionPolicy', 'Bypass')
+    }
+    $arguments += @('-File', $cliScriptPath)
+    & $powerShellCmd @arguments
+    return $LASTEXITCODE
+  } catch {
+    Warn "CLI bootstrap failed: $($_.Exception.Message)"
+    return 1
+  } finally {
+    Remove-Item -Force -Path $cliScriptPath -ErrorAction SilentlyContinue
+  }
 }
 
 $AzCmd = Ensure-AzureCli
@@ -368,25 +329,7 @@ if (Test-IsAdministrator) {
   Warn 'Running as Administrator is not recommended. Azure CLI extensions are installed per user and can fail with profile or ownership errors. Use a normal PowerShell window unless a prerequisite installer explicitly asks for elevation.'
 }
 
-# Ensure azure-devops extension is installed (idempotent).
-$extCheck = Invoke-Native $AzCmd @('extension', 'list', '--query', "[?name=='azure-devops'].name", '-o', 'tsv')
-$extNames = @($extCheck.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-if ($extCheck.ExitCode -ne 0 -or -not ($extNames -contains 'azure-devops')) {
-  Say "Installing 'azure-devops' Azure CLI extension"
-  $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
-  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliCorporateCa)) {
-    Say "Retrying 'azure-devops' Azure CLI extension install with corporate CA bundle"
-    $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
-  }
-  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Enable-AzureCliDefaultCertStore $AzCmd)) {
-    Say "Retrying 'azure-devops' Azure CLI extension install with Windows/default certificate store"
-    $addExt = Invoke-Native $AzCmd @('extension', 'add', '--name', 'azure-devops', '--only-show-errors', '--yes')
-  }
-  if ($addExt.ExitCode -ne 0 -and (Test-IsCertificateError $addExt.Output) -and (Install-AzureDevOpsExtensionFromLocalWheel $AzCmd)) {
-    $addExt = Invoke-Native $AzCmd @('extension', 'show', '--name', 'azure-devops', '--only-show-errors')
-  }
-  if ($addExt.ExitCode -ne 0) { Die (Get-AzureDevOpsExtensionInstallHelp $addExt.Output) }
-}
+Ensure-AzureDevOpsExtension $AzCmd
 
 # Confirm signed in.
 $account = Invoke-Native $AzCmd @('account', 'show', '-o', 'none')
@@ -430,12 +373,10 @@ try {
   if (-not $SkipCli) {
     Write-Host ""
     Write-Host ">> Bootstrapping @adports/aidev CLI ..."
-    try {
-      Invoke-Expression (Invoke-WebRequest -UseBasicParsing -Uri $CliInstallerUrl).Content
-    }
-    catch {
-      Write-Warning "CLI bootstrap failed: $($_.Exception.Message)"
-      Write-Warning "Run it manually: iwr -useb $CliInstallerUrl | iex"
+    $cliExit = Invoke-AdpaiCliBootstrap
+    if ($cliExit -ne 0) {
+      Write-Warning "CLI bootstrap failed or was cancelled (exit $cliExit)."
+      Write-Warning "The VS Code extension install may still be complete. To retry CLI setup later: iwr -useb $CliInstallerUrl | iex"
     }
   }
   else {

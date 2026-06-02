@@ -72,13 +72,15 @@ Invoke-Expression "$($script.Content); & { param([string]`$Version='2.0.1') }"
 
 ### What the VSIX installer does
 
-1. Bootstraps Azure CLI (`az`) when missing, using `winget` first and Chocolatey as fallback on Windows.
-2. Bootstraps the VS Code CLI (`code`) when missing, using `winget` first and Chocolatey as fallback on Windows.
-3. Installs the `azure-devops` extension for Azure CLI when missing.
+1. Checks Azure CLI (`az`) and stops with manual install instructions if it is missing.
+2. Checks the VS Code CLI (`code`) and stops with manual install instructions if it is missing.
+3. Checks the `azure-devops` extension for Azure CLI and stops with manual install instructions if it is missing.
 4. Runs `az login` if no active session.
 5. Downloads the requested VSIX from the private `adpai-vsix` Azure Artifacts Universal feed.
 6. Runs `code --install-extension <vsix> --force`.
-7. Bootstraps the `@adports/aidev` CLI by chaining `install-adpai.{sh,ps1}` (skip with `--skip-cli` / `-SkipCli`).
+7. Bootstraps the `@adports/aidev` CLI by chaining `install-adpai.{sh,ps1}` in a child PowerShell process (skip with `--skip-cli` / `-SkipCli`).
+
+The Windows VSIX installer does not silently install Azure CLI, VS Code, or Chocolatey. If a prerequisite is missing, install it through Company Portal / Software Center or an approved user-scope installer, then rerun the one-liner.
 
 The user must have **Feed Reader** on both the [`adpai-vsix` feed](https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix/settings/permissions) (VSIX) and the [`adpai` feed](https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/settings/permissions) (CLI). The scripts contain no secrets.
 
@@ -99,7 +101,7 @@ The scripts contain no secrets. Each user authenticates with their own AD Ports 
 | `401 Unauthorized` on `npm view` | Confirm the user has **Feed Reader** on the adpai Azure Artifacts feed, then rerun the installer. |
 | `E404 registry.npmjs.org` | The `@adports` npm scope did not map to the private feed. Rerun the installer or add `@adports:registry=https://pkgs.dev.azure.com/abudhabiports/_packaging/adpai/npm/registry/` to `~/.npmrc`. |
 | `Ignoring extra certs from ... zscaler-root-ca.crt` | `NODE_EXTRA_CA_CERTS` points to a missing or inaccessible certificate. Fix the path or run `Remove-Item Env:NODE_EXTRA_CA_CERTS` for the current PowerShell session, then rerun the installer. |
-| `CERTIFICATE_VERIFY_FAILED` or `SSLCertVerificationError` during `az extension add` | Corporate TLS inspection, commonly Zscaler, is trusted by Windows but not always by Azure CLI's Python certificate bundle. Preferred Windows fix: run `az config set core.use_default_cert_store=true`, then rerun the installer. The Windows installer also tries to auto-export a Zscaler root certificate, retry with `REQUESTS_CA_BUNDLE`, retry with Azure CLI default certificate store mode, then download the `azure-devops` wheel with PowerShell and install it locally with `az extension add --source`. |
-| `ERROR: 'az' not found` (VSIX installer) | Re-run in a new PowerShell window. The Windows installer bootstraps Azure CLI with `winget`/Chocolatey when available; if both package managers are unavailable, install Azure CLI from <https://aka.ms/installazurecli>. |
+| `CERTIFICATE_VERIFY_FAILED` or `SSLCertVerificationError` during `az extension add` | Corporate TLS inspection, commonly Zscaler, is trusted by Windows but not always by Azure CLI's Python certificate bundle. Preferred Windows fix: run `az config set core.use_default_cert_store=true`, then rerun `az extension add --name azure-devops --only-show-errors`. |
+| `Azure CLI ('az') is required` | Install Azure CLI from Company Portal / Software Center or ask IT to deploy it. If user-scope winget is allowed, try `winget install -e --id Microsoft.AzureCLI --scope user`. Then close and reopen PowerShell and rerun the installer. |
 | `ERROR: no .vsix found` after download | Confirm the requested version exists at <https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix>. Omit the version arg to grab the latest. |
-| `code: command not found` | Re-run in a new PowerShell window. The Windows installer bootstraps VS Code with `winget`/Chocolatey when available; if VS Code is already installed but PATH is stale, open VS Code and run Command Palette → **Shell Command: Install 'code' command in PATH**. |
+| `VS Code CLI ('code') is required` | If VS Code is installed, open VS Code and run Command Palette -> **Shell Command: Install 'code' command in PATH**, then reopen PowerShell. If VS Code is missing and user-scope winget is allowed, try `winget install -e --id Microsoft.VisualStudioCode --scope user`. |
