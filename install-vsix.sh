@@ -23,6 +23,8 @@ ORG="https://dev.azure.com/abudhabiports"
 PROJECT="Foundations"
 FEED="adpai-vsix"
 PACKAGE="adp-ai-sdlc"
+ADPORTS_TENANT_ID="3b618463-9352-4fa4-a67c-112da2837c29"
+FEED_PERMS_URL="https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix/settings/permissions"
 CLI_INSTALLER_URL="https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.sh"
 
 VERSION="*"
@@ -55,11 +57,50 @@ if ! az extension show --name azure-devops >/dev/null 2>&1; then
   az extension add --name azure-devops --only-show-errors
 fi
 
-# Confirm the user is signed in.
-if ! az account show >/dev/null 2>&1; then
-  echo ">> Not signed in. Running 'az login' ..."
-  az login --only-show-errors >/dev/null
+# Confirm the user is signed in to the AD Ports tenant.
+# Many AD Ports devs have a personal/MSA tenant cached from a previous 'az login';
+# without forcing the AD Ports tenant, the Foundations project is invisible and
+# the download fails with: VS800075: The project ... does not exist, or you do
+# not have permission to access it.
+CURRENT_TENANT="$(az account show --query tenantId -o tsv 2>/dev/null || true)"
+if [[ "$CURRENT_TENANT" != "$ADPORTS_TENANT_ID" ]]; then
+  # Prefer an already-cached AD Ports subscription (no browser, no MFA) before
+  # falling back to an interactive login.
+  ADPORTS_SUB="$(az account list --query "[?tenantId=='$ADPORTS_TENANT_ID'] | [0].id" -o tsv 2>/dev/null || true)"
+  if [[ -n "$ADPORTS_SUB" ]]; then
+    echo ">> Switching default Azure subscription to AD Ports tenant (cached)."
+    az account set --subscription "$ADPORTS_SUB"
+  else
+    if [[ -z "$CURRENT_TENANT" ]]; then
+      echo ">> Not signed in. Running 'az login --tenant $ADPORTS_TENANT_ID' ..."
+    else
+      echo ">> Current Azure session is not in the AD Ports tenant"
+      echo "   (current: $CURRENT_TENANT, expected: $ADPORTS_TENANT_ID)."
+      echo ">> Signing in to the AD Ports tenant ..."
+    fi
+    if ! az login --tenant "$ADPORTS_TENANT_ID" --only-show-errors >/dev/null; then
+      cat >&2 <<EOM
+
+ERROR: 'az login --tenant $ADPORTS_TENANT_ID' failed.
+
+Try one of these manually, then re-run the installer:
+
+  # Standard browser login (works on most machines):
+  az login --tenant $ADPORTS_TENANT_ID
+
+  # If the browser does not open (SSH session, headless, restricted browser):
+  az login --tenant $ADPORTS_TENANT_ID --use-device-code
+
+Re-run:
+  curl -fsSL https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-vsix.sh | bash
+
+EOM
+      exit 1
+    fi
+  fi
 fi
+ACCOUNT_USER="$(az account show --query user.name -o tsv 2>/dev/null || echo unknown)"
+echo ">> Signed in as: $ACCOUNT_USER"
 
 # ---------- Rosetta 2 preflight (Apple Silicon macOS) ----------
 # 'az artifacts universal download' shells out to a vendored helper called
@@ -101,15 +142,40 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo ">> Downloading $PACKAGE@$VERSION from $ORG/$PROJECT/$FEED ..."
-az artifacts universal download \
-  --organization "$ORG" \
-  --project "$PROJECT" \
-  --scope project \
-  --feed "$FEED" \
-  --name "$PACKAGE" \
-  --version "$VERSION" \
-  --path "$TMP_DIR" \
-  --only-show-errors
+DOWNLOAD_LOG="$(mktemp)"
+if ! az artifacts universal download \
+      --organization "$ORG" \
+      --project "$PROJECT" \
+      --scope project \
+      --feed "$FEED" \
+      --name "$PACKAGE" \
+      --version "$VERSION" \
+      --path "$TMP_DIR" \
+      --only-show-errors 2>"$DOWNLOAD_LOG"; then
+  cat "$DOWNLOAD_LOG" >&2
+  if grep -q "VS800075" "$DOWNLOAD_LOG" 2>/dev/null; then
+    cat >&2 <<EOM
+
+ERROR: Cannot see the '$PROJECT' project or '$FEED' feed in Azure DevOps.
+
+This usually means one of:
+
+  1. You signed in with a non-AD-Ports Microsoft account.
+     Verify with:   az account show
+     The 'tenantId' must be: $ADPORTS_TENANT_ID
+     If wrong, run:  az login --tenant $ADPORTS_TENANT_ID
+     then re-run this installer.
+
+  2. Your AD Ports identity has no 'Feed Reader' permission on '$FEED'.
+     Ask the AD Ports DevOps admin to grant access here:
+        $FEED_PERMS_URL
+
+EOM
+  fi
+  rm -f "$DOWNLOAD_LOG"
+  exit 1
+fi
+rm -f "$DOWNLOAD_LOG"
 
 VSIX="$(ls -1 "$TMP_DIR"/*.vsix 2>/dev/null | head -n1 || true)"
 if [[ -z "$VSIX" || ! -f "$VSIX" ]]; then
