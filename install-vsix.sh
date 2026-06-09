@@ -61,6 +61,42 @@ if ! az account show >/dev/null 2>&1; then
   az login --only-show-errors >/dev/null
 fi
 
+# ---------- Rosetta 2 preflight (Apple Silicon macOS) ----------
+# 'az artifacts universal download' shells out to a vendored helper called
+# 'artifacttool' which Microsoft ships ONLY as an Intel (osx-x64) binary.
+# On Apple Silicon (M1/M2/M3/...) this requires Rosetta 2; without it the
+# download fails with: [Errno 86] Bad CPU type in executable.
+if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  if ! /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+    cat >&2 <<'EOM'
+>> Apple Silicon Mac detected without Rosetta 2.
+>> 'az artifacts' uses an Intel-only helper (artifacttool), so Rosetta 2
+>> is required to download the VSIX. Attempting auto-install now
+>> (you may be prompted for your macOS password):
+>>
+>>     sudo softwareupdate --install-rosetta --agree-to-license
+EOM
+    if sudo softwareupdate --install-rosetta --agree-to-license; then
+      echo ">> Rosetta 2 installed." >&2
+    else
+      cat >&2 <<'EOM'
+
+ERROR: Rosetta 2 auto-install failed (or was cancelled).
+
+Install it manually first:
+
+    sudo softwareupdate --install-rosetta --agree-to-license
+
+Then re-run this installer:
+
+    curl -fsSL https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-vsix.sh | bash
+
+EOM
+      exit 1
+    fi
+  fi
+fi
+
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
