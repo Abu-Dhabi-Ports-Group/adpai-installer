@@ -383,6 +383,10 @@ Say "Installing $Pkg globally (2-5 minutes is normal on corporate networks)"
 # inspection before the first install attempt. Feed auth success only proves the
 # Azure Artifacts token works; public dependencies use a different TLS chain.
 Repair-CorporateTls
+# Pre-clean any partial @adports tree from a prior aborted run. Without this,
+# the FIRST attempt enters npm's reify-cleanup phase against the leftover tree
+# and may hit the EPERM/'node.target is null' bug before we get a chance to retry.
+Reset-StaleAdpaiInstall
 # Stream npm output live (no pipe / no Tee, those buffer the npm http fetch lines).
 $oldErrorActionPreference = $ErrorActionPreference
 try {
@@ -394,47 +398,81 @@ try {
 }
 
 if ($installExit -ne 0) {
-  # Could be corporate TLS interception on registry.npmjs.org / dep CDNs,
-  # OR a stale half-installed @adports tree from a prior aborted run
-  # (npm 11 surfaces this as 'Cannot destructure property package of node.target as it is null'
-  # plus EPERM rmdir warnings on nested @opentelemetry directories).
-  # Both fixes are idempotent and quick, so just run them and retry once.
+  # Attempt 2: TLS auto-fix + cleanup + serialize downloads.
+  # --maxsockets=1 forces npm to download and extract one tarball at a time,
+  # which gives Windows Defender / Search Indexer time to release file handles
+  # before npm tries to clean up the staging dir. The EPERM cascade and the
+  # subsequent 'Cannot destructure property package of node.target' bug typically
+  # fire when 10+ @opentelemetry/@grpc tarballs extract in parallel.
   Warn "npm install failed (exit $installExit). Attempting silent auto-fix and one retry."
   Repair-CorporateTls
   Reset-StaleAdpaiInstall
-  Say "Retrying $Pkg install with --force (overwrites any leftover state)."
+  Say 'Retrying with serialized downloads (--maxsockets=1, slower but Defender-friendly).'
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --loglevel=http
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
     $installExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
   }
 }
 
-if ($installExit -ne 0) {
-  # Attempt 3: --install-strategy=nested sidesteps the npm 11 'reify cleanup' phase
-  # entirely (npm v6-style nested node_modules) — the cleanup is where the
-  # 'Cannot destructure property package of node.target as it is null' bug fires.
-  Warn 'Second attempt failed. Trying nested install strategy (silent).'
-  Reset-StaleAdpaiInstall
+# Alternate prefix location (used by attempts 3 and 4 below, and by the post-install
+# verification block). $env:LOCALAPPDATA is per-machine (not Roaming/OneDrive-synced)
+# and avoids the npm-global path that triggers the bug on this user's setup.
+$script:AltPrefix = Join-Path $env:LOCALAPPDATA 'adpai\npm'
+
+function Install-AdpaiAtAltPrefix ($npmExe) {
+  Say "Installing $Pkg to alternate location $script:AltPrefix (bypasses npm-global bug)."
+  try {
+    if (Test-Path -LiteralPath $script:AltPrefix) {
+      & cmd /c "rd /s /q `"$($script:AltPrefix)`"" 2>$null | Out-Null
+    }
+    New-Item -ItemType Directory -Path $script:AltPrefix -Force | Out-Null
+  } catch { }
   $oldErrorActionPreference = $ErrorActionPreference
+  $exitCode = 1
   try {
     $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --legacy-peer-deps --install-strategy=nested --loglevel=http
-    $installExit = $LASTEXITCODE
+    & $npmExe install -g $Pkg --prefix $script:AltPrefix --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
+    $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
   }
+  if ($exitCode -eq 0) {
+    # Make 'adpai' resolvable in this session AND future ones.
+    if ($env:Path -notlike "*$($script:AltPrefix)*") {
+      $env:Path = "$($script:AltPrefix);$env:Path"
+    }
+    try {
+      $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+      if (-not $userPath -or $userPath -notlike "*$($script:AltPrefix)*") {
+        $newUserPath = if ($userPath) { "$($script:AltPrefix);$userPath" } else { $script:AltPrefix }
+        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+      }
+    } catch { }
+    Ok "Installed $Pkg to $script:AltPrefix and added to user PATH."
+  }
+  return $exitCode
 }
 
 if ($installExit -ne 0) {
-  # Attempt 4 (final silent fallback): npm 11.13 has a confirmed reify bug on this
-  # @grpc/@opentelemetry tree. npm 10 uses a different reify path that handles it.
-  # Install npm@10 (one isolated package install — does NOT trigger the same bug),
-  # then retry @adports/aidev. Leaves the user on npm 10, which is fully supported.
-  Warn 'Third attempt failed (npm 11 reify bug). Falling back to npm 10 (silent).'
+  # Attempt 3: install to alternate prefix (\$env:LOCALAPPDATA\adpai\npm).
+  # Roaming/OneDrive sync + corporate Defender real-time protection on
+  # %APPDATA%\npm is the consistent failure mode. LocalAppData has lighter
+  # scanning and never syncs to OneDrive, which is enough to break the EPERM cycle.
+  Warn 'Second attempt failed. Trying alternate install location (silent).'
+  $installExit = Install-AdpaiAtAltPrefix $NpmCmd
+}
+
+if ($installExit -ne 0) {
+  # Attempt 4 (final silent fallback): install npm@10, then run it DIRECTLY via
+  # 'node npm-cli.js' instead of the 'npm' PATH shim. Node 24 ships npm 11
+  # bundled at C:\Program Files\nodejs\npm.cmd, which sits before %APPDATA%\npm
+  # on PATH — so 'npm' on PATH stays npm 11 even after 'npm install -g npm@10'.
+  # npm 10 uses an older reify cleanup path that doesn't hit the 'node.target is null' crash.
+  Warn 'Third attempt failed. Falling back to npm 10 + alternate prefix (silent).'
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
@@ -443,25 +481,20 @@ if ($installExit -ne 0) {
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
   }
-  if ($downgradeExit -eq 0) {
-    # The npm shim under %APPDATA%\npm now points at npm 10. Re-resolve so we use it.
-    $resolved = Resolve-Cmd 'npm'
-    if ($resolved) { $NpmCmd = $resolved }
-    Reset-StaleAdpaiInstall
-    Say "Retrying $Pkg install with npm 10..."
-    $oldErrorActionPreference = $ErrorActionPreference
+  $npm10Cli = Join-Path $env:APPDATA 'npm\node_modules\npm\bin\npm-cli.js'
+  $nodeExe = Resolve-Cmd 'node'
+  if ($downgradeExit -eq 0 -and (Test-Path $npm10Cli) -and $nodeExe) {
+    # Build a wrapper script-block we can invoke as the 'npm' executable.
+    # Easier: write a tiny .cmd that shells out to 'node npm-cli.js "$@"'.
+    $npm10Shim = Join-Path $env:TEMP "adpai-npm10-$([guid]::NewGuid().ToString('N')).cmd"
     try {
-      $ErrorActionPreference = 'Continue'
-      & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
-      $installExit = $LASTEXITCODE
+      "@echo off`r`n`"$nodeExe`" `"$npm10Cli`" %*" | Set-Content -Path $npm10Shim -Encoding ASCII
+      $installExit = Install-AdpaiAtAltPrefix $npm10Shim
     } finally {
-      $ErrorActionPreference = $oldErrorActionPreference
-    }
-    if ($installExit -eq 0) {
-      Ok 'Installed via npm 10 fallback. (Your global npm is now pinned to v10; run ''npm install -g npm@latest'' to return to npm 11 if desired.)'
+      if (Test-Path $npm10Shim) { Remove-Item $npm10Shim -Force -ErrorAction SilentlyContinue }
     }
   } else {
-    Warn 'Could not install npm@10 either.'
+    Warn 'Could not install npm@10 either; cannot run final fallback.'
   }
 }
 
@@ -490,6 +523,14 @@ Full diagnostic log:
 "@
 }
 $AdpaiCmd = Resolve-NpmGlobalCmd 'adpai'
+if (-not $AdpaiCmd -and $script:AltPrefix) {
+  # We may have installed to the alternate prefix; Resolve-NpmGlobalCmd only checks
+  # the npm-global prefix, so look at the alt-prefix shim directly.
+  foreach ($ext in @('.cmd', '.ps1', '')) {
+    $candidate = Join-Path $script:AltPrefix "adpai$ext"
+    if (Test-Path $candidate) { $AdpaiCmd = $candidate; break }
+  }
+}
 if ($AdpaiCmd) {
   $installedResult = Invoke-Native $AdpaiCmd @('--version')
   if ($installedResult.ExitCode -eq 0) {
