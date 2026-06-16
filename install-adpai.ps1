@@ -80,6 +80,43 @@ function Repair-CorporateTls {
     Warn "Could not export Windows CA bundle: $($_.Exception.Message)"
   }
 }
+function Reset-StaleAdpaiInstall {
+  # npm 11 fails reify with 'Cannot destructure property package of node.target as it is null'
+  # when an earlier partial install left a half-cleaned tree under %APPDATA%\npm\node_modules\@adports\aidev,
+  # often because Windows Defender / file indexer holds nested @opentelemetry files open.
+  # Wipe the stale tree, kill stray node.exe processes that own a handle inside it, and clear the cache.
+  $globalRoot = $null
+  try {
+    $prefixResult = Invoke-Native $NpmCmd @('prefix', '-g')
+    if ($prefixResult.ExitCode -eq 0 -and $prefixResult.Output) {
+      $globalRoot = ($prefixResult.Output | Select-Object -First 1).ToString().Trim()
+    }
+  } catch { }
+  if (-not $globalRoot) { $globalRoot = Join-Path $env:APPDATA 'npm' }
+  $stale = Join-Path $globalRoot 'node_modules\@adports'
+  if (Test-Path -LiteralPath $stale) {
+    Say "Resetting stale @adports global install tree at $stale"
+    # Stop adpai-related node processes that may hold handles on the stale tree.
+    try {
+      Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match '@adports' } |
+        ForEach-Object {
+          try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    } catch { }
+    # cmd /c rd is more permissive than Remove-Item on locked / long-path Windows trees.
+    & cmd /c "rd /s /q `"$stale`"" 2>$null | Out-Null
+    if (Test-Path -LiteralPath $stale) {
+      try { Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction Stop } catch {
+        Warn "Could not fully remove $stale (something has it locked). Try closing all VS Code / terminal windows and re-run."
+      }
+    }
+  }
+  try {
+    $cacheClean = Invoke-Native $NpmCmd @('cache', 'clean', '--force')
+    if ($cacheClean.ExitCode -eq 0) { Ok 'npm cache cleaned' }
+  } catch { }
+}
 function Invoke-Native ($filePath, $arguments) {
   $oldErrorActionPreference = $ErrorActionPreference
   $nativePreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue
@@ -330,10 +367,14 @@ try {
 }
 
 if ($installExit -ne 0) {
-  # Could be corporate TLS interception on registry.npmjs.org / dep CDNs.
-  # Repair-CorporateTls is idempotent and quick, so just run it and retry once.
-  Warn "npm install failed (exit $installExit). Attempting corporate-TLS auto-fix and one retry."
+  # Could be corporate TLS interception on registry.npmjs.org / dep CDNs,
+  # OR a stale half-installed @adports tree from a prior aborted run
+  # (npm 11 surfaces this as 'Cannot destructure property package of node.target as it is null'
+  # plus EPERM rmdir warnings on nested @opentelemetry directories).
+  # Both fixes are idempotent and quick, so just run them and retry once.
+  Warn "npm install failed (exit $installExit). Attempting auto-fix and one retry."
   Repair-CorporateTls
+  Reset-StaleAdpaiInstall
   Say "Retrying $Pkg install (child npm processes will pick up NODE_EXTRA_CA_CERTS + npm cafile)."
   $oldErrorActionPreference = $ErrorActionPreference
   try {
