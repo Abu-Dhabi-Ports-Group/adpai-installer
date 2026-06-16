@@ -85,6 +85,8 @@ function Reset-StaleAdpaiInstall {
   # when an earlier partial install left a half-cleaned tree under %APPDATA%\npm\node_modules\@adports\aidev,
   # often because Windows Defender / file indexer holds nested @opentelemetry files open.
   # Wipe the stale tree, kill stray node.exe processes that own a handle inside it, and clear the cache.
+  # Every step is wrapped in try/catch so this function can never throw back to the caller;
+  # if cleanup fails we just let npm try again and surface its own error.
   $globalRoot = $null
   try {
     $prefixResult = Invoke-Native $NpmCmd @('prefix', '-g')
@@ -95,23 +97,48 @@ function Reset-StaleAdpaiInstall {
   if (-not $globalRoot) { $globalRoot = Join-Path $env:APPDATA 'npm' }
   $stale = Join-Path $globalRoot 'node_modules\@adports'
   if (Test-Path -LiteralPath $stale) {
-    Say "Resetting stale @adports global install tree at $stale"
+    Say 'Cleaning up partial @adports install (silent auto-recovery)'
     # Stop adpai-related node processes that may hold handles on the stale tree.
+    # Filter narrowly so we don't kill VS Code / unrelated tools.
     try {
+      $stalePattern = [regex]::Escape($stale)
       Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -match '@adports' } |
+        Where-Object {
+          $_.CommandLine -and (
+            $_.CommandLine -match '@adports' -or
+            $_.CommandLine -match $stalePattern
+          )
+        } |
         ForEach-Object {
           try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
         }
     } catch { }
-    # cmd /c rd is more permissive than Remove-Item on locked / long-path Windows trees.
-    & cmd /c "rd /s /q `"$stale`"" 2>$null | Out-Null
-    if (Test-Path -LiteralPath $stale) {
-      try { Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction Stop } catch {
-        Warn "Could not fully remove $stale (something has it locked). Try closing all VS Code / terminal windows and re-run."
-      }
+    # Try several deletion strategies with backoff. Antivirus / search indexer
+    # often releases the handle within a second.
+    $deleted = $false
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+      if (-not (Test-Path -LiteralPath $stale)) { $deleted = $true; break }
+      try { & cmd /c "rd /s /q `"$stale`"" 2>$null | Out-Null } catch { }
+      if (-not (Test-Path -LiteralPath $stale)) { $deleted = $true; break }
+      try { Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+      if (-not (Test-Path -LiteralPath $stale)) { $deleted = $true; break }
+      Start-Sleep -Milliseconds (200 * $attempt)
+    }
+    # Last resort: rename the locked tree out of the way so npm sees an empty slot.
+    if (-not $deleted) {
+      try {
+        $stamp = (Get-Date).ToString('yyyyMMddHHmmss')
+        Rename-Item -LiteralPath $stale -NewName "@adports.broken-$stamp" -ErrorAction Stop
+        $deleted = $true
+      } catch { }
+    }
+    if (-not $deleted) {
+      # Don't escalate to the user yet; npm may still recover, and we have one more
+      # install attempt with --force after this. Just note it quietly.
+      Warn 'Could not fully clear stale @adports tree; continuing anyway.'
     }
   }
+  # npm cache may also contain partial tarballs from the failed reify.
   try {
     $cacheClean = Invoke-Native $NpmCmd @('cache', 'clean', '--force')
     if ($cacheClean.ExitCode -eq 0) { Ok 'npm cache cleaned' }
@@ -372,14 +399,29 @@ if ($installExit -ne 0) {
   # (npm 11 surfaces this as 'Cannot destructure property package of node.target as it is null'
   # plus EPERM rmdir warnings on nested @opentelemetry directories).
   # Both fixes are idempotent and quick, so just run them and retry once.
-  Warn "npm install failed (exit $installExit). Attempting auto-fix and one retry."
+  Warn "npm install failed (exit $installExit). Attempting silent auto-fix and one retry."
   Repair-CorporateTls
   Reset-StaleAdpaiInstall
-  Say "Retrying $Pkg install (child npm processes will pick up NODE_EXTRA_CA_CERTS + npm cafile)."
+  Say "Retrying $Pkg install with --force (overwrites any leftover state)."
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --loglevel=http
+    $installExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+}
+
+if ($installExit -ne 0) {
+  # Final silent fallback: clean again and try with --force --legacy-peer-deps.
+  # If this also fails we surface the user-visible error below.
+  Warn 'Second attempt failed. Trying final silent fallback (--force --legacy-peer-deps).'
+  Reset-StaleAdpaiInstall
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --legacy-peer-deps --loglevel=http
     $installExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
