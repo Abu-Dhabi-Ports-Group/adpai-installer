@@ -414,14 +414,15 @@ if ($installExit -ne 0) {
 }
 
 if ($installExit -ne 0) {
-  # Final silent fallback: clean again and try with --force --legacy-peer-deps.
-  # If this also fails we surface the user-visible error below.
-  Warn 'Second attempt failed. Trying final silent fallback (--force --legacy-peer-deps).'
+  # Attempt 3: --install-strategy=nested sidesteps the npm 11 'reify cleanup' phase
+  # entirely (npm v6-style nested node_modules) — the cleanup is where the
+  # 'Cannot destructure property package of node.target as it is null' bug fires.
+  Warn 'Second attempt failed. Trying nested install strategy (silent).'
   Reset-StaleAdpaiInstall
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --legacy-peer-deps --loglevel=http
+    & $NpmCmd install -g $Pkg --no-fund --no-audit --force --legacy-peer-deps --install-strategy=nested --loglevel=http
     $installExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
@@ -429,7 +430,64 @@ if ($installExit -ne 0) {
 }
 
 if ($installExit -ne 0) {
-  Die "Failed to install $Pkg globally (npm exit $installExit). Re-run with ``--loglevel=verbose`` for full output: npm install -g $Pkg --loglevel=verbose"
+  # Attempt 4 (final silent fallback): npm 11.13 has a confirmed reify bug on this
+  # @grpc/@opentelemetry tree. npm 10 uses a different reify path that handles it.
+  # Install npm@10 (one isolated package install — does NOT trigger the same bug),
+  # then retry @adports/aidev. Leaves the user on npm 10, which is fully supported.
+  Warn 'Third attempt failed (npm 11 reify bug). Falling back to npm 10 (silent).'
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $NpmCmd install -g npm@10 --no-fund --no-audit --loglevel=error 2>&1 | Out-Null
+    $downgradeExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+  if ($downgradeExit -eq 0) {
+    # The npm shim under %APPDATA%\npm now points at npm 10. Re-resolve so we use it.
+    $resolved = Resolve-Cmd 'npm'
+    if ($resolved) { $NpmCmd = $resolved }
+    Reset-StaleAdpaiInstall
+    Say "Retrying $Pkg install with npm 10..."
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = 'Continue'
+      & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+      $installExit = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $oldErrorActionPreference
+    }
+    if ($installExit -eq 0) {
+      Ok 'Installed via npm 10 fallback. (Your global npm is now pinned to v10; run ''npm install -g npm@latest'' to return to npm 11 if desired.)'
+    }
+  } else {
+    Warn 'Could not install npm@10 either.'
+  }
+}
+
+if ($installExit -ne 0) {
+  Die @"
+Failed to install $Pkg globally after 4 attempts (npm exit $installExit).
+
+This is npm 11's 'node.target is null' reify bug, triggered when Windows Defender
+or a search indexer briefly locks files inside the deeply nested @opentelemetry tree.
+
+Try these one at a time:
+
+  1. Run PowerShell as Administrator and re-run the installer:
+         iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
+
+  2. Exclude the global npm folder from Windows Defender real-time scanning,
+     then re-run the installer:
+         Add-MpPreference -ExclusionPath \"$env:APPDATA\npm\"
+
+  3. Manually downgrade to npm 10 and retry:
+         npm install -g npm@10
+         npm install -g $Pkg
+
+Full diagnostic log:
+         npm install -g $Pkg --loglevel=verbose
+"@
 }
 $AdpaiCmd = Resolve-NpmGlobalCmd 'adpai'
 if ($AdpaiCmd) {
