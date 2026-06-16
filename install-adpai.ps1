@@ -467,34 +467,67 @@ if ($installExit -ne 0) {
 }
 
 if ($installExit -ne 0) {
-  # Attempt 4 (final silent fallback): install npm@10, then run it DIRECTLY via
-  # 'node npm-cli.js' instead of the 'npm' PATH shim. Node 24 ships npm 11
-  # bundled at C:\Program Files\nodejs\npm.cmd, which sits before %APPDATA%\npm
-  # on PATH — so 'npm' on PATH stays npm 11 even after 'npm install -g npm@10'.
-  # npm 10 uses an older reify cleanup path that doesn't hit the 'node.target is null' crash.
-  Warn 'Third attempt failed. Falling back to npm 10 + alternate prefix (silent).'
-  $oldErrorActionPreference = $ErrorActionPreference
-  try {
-    $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g npm@10 --no-fund --no-audit --loglevel=error 2>&1 | Out-Null
-    $downgradeExit = $LASTEXITCODE
-  } finally {
-    $ErrorActionPreference = $oldErrorActionPreference
-  }
-  $npm10Cli = Join-Path $env:APPDATA 'npm\node_modules\npm\bin\npm-cli.js'
-  $nodeExe = Resolve-Cmd 'node'
-  if ($downgradeExit -eq 0 -and (Test-Path $npm10Cli) -and $nodeExe) {
-    # Build a wrapper script-block we can invoke as the 'npm' executable.
-    # Easier: write a tiny .cmd that shells out to 'node npm-cli.js "$@"'.
-    $npm10Shim = Join-Path $env:TEMP "adpai-npm10-$([guid]::NewGuid().ToString('N')).cmd"
+  # Attempt 4 (final silent fallback): use pnpm instead of npm.
+  # pnpm hard-links from a content-addressable store and does not do the
+  # 'parallel-extract-into-staging then bulk-rmdir cleanup' pattern that triggers
+  # the EPERM cascade + 'node.target is null' crash on Defender-protected machines.
+  # This is proven to work on the same machines where every npm attempt fails.
+  Warn 'Third attempt failed. Falling back to pnpm (silent).'
+  $pnpmCmd = Resolve-Cmd 'pnpm'
+  if (-not $pnpmCmd) {
+    Say 'Installing pnpm (one-time, ~5 MB, used as install backend only)...'
+    $oldErrorActionPreference = $ErrorActionPreference
     try {
-      "@echo off`r`n`"$nodeExe`" `"$npm10Cli`" %*" | Set-Content -Path $npm10Shim -Encoding ASCII
-      $installExit = Install-AdpaiAtAltPrefix $npm10Shim
+      $ErrorActionPreference = 'Continue'
+      & $NpmCmd install -g pnpm --no-fund --no-audit --loglevel=error 2>&1 | Out-Null
+      $pnpmInstallExit = $LASTEXITCODE
     } finally {
-      if (Test-Path $npm10Shim) { Remove-Item $npm10Shim -Force -ErrorAction SilentlyContinue }
+      $ErrorActionPreference = $oldErrorActionPreference
+    }
+    if ($pnpmInstallExit -eq 0) {
+      Refresh-Path
+      $pnpmCmd = Resolve-Cmd 'pnpm'
+    }
+  }
+  if ($pnpmCmd) {
+    # pnpm setup creates ~/.local/share/pnpm (LOCALAPPDATA/pnpm on Windows)
+    # and writes it to the persistent user PATH. We then make it visible in
+    # THIS session so the verification step at the end can find 'adpai'.
+    try {
+      & $pnpmCmd setup 2>&1 | Out-Null
+    } catch { }
+    $pnpmHome = if ($env:PNPM_HOME) { $env:PNPM_HOME } else { Join-Path $env:LOCALAPPDATA 'pnpm' }
+    $pnpmBinDirs = @($pnpmHome, (Join-Path $pnpmHome 'bin')) | Where-Object { Test-Path $_ }
+    foreach ($d in $pnpmBinDirs) {
+      if ($env:Path -notlike "*$d*") { $env:Path = "$d;$env:Path" }
+    }
+    Say "Installing $Pkg via pnpm (this is the resilient path)."
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = 'Continue'
+      # 'pnpm add -g' is the equivalent of 'npm install -g'.
+      & $pnpmCmd add -g $Pkg
+      $installExit = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $oldErrorActionPreference
+    }
+    if ($installExit -eq 0) {
+      # pnpm setup already wrote PNPM_HOME to the user environment, so future
+      # shells pick up 'adpai' automatically. Belt-and-braces: also add the bin
+      # dir to the user PATH so it survives even if PNPM_HOME isn't honoured.
+      try {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        foreach ($d in $pnpmBinDirs) {
+          if (-not $userPath -or $userPath -notlike "*$d*") {
+            $userPath = if ($userPath) { "$d;$userPath" } else { $d }
+          }
+        }
+        [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
+      } catch { }
+      Ok 'Installed via pnpm. (pnpm is now your global install backend; npm still works for everything else.)'
     }
   } else {
-    Warn 'Could not install npm@10 either; cannot run final fallback.'
+    Warn 'Could not install pnpm either; cannot run final fallback.'
   }
 }
 
@@ -505,7 +538,15 @@ Failed to install $Pkg globally after 4 attempts (npm exit $installExit).
 This is npm 11's 'node.target is null' reify bug, triggered when Windows Defender
 or a search indexer briefly locks files inside the deeply nested @opentelemetry tree.
 
-Try these one at a time:
+Try this (proven to work on Defender-protected machines):
+
+    npm install -g pnpm
+    pnpm setup
+    # close ALL PowerShell windows, open a fresh one, then:
+    pnpm add -g $Pkg
+    adpai --version
+
+Other options if pnpm is blocked:
 
   1. Run PowerShell as Administrator and re-run the installer:
          iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
@@ -513,10 +554,6 @@ Try these one at a time:
   2. Exclude the global npm folder from Windows Defender real-time scanning,
      then re-run the installer:
          Add-MpPreference -ExclusionPath \"$env:APPDATA\npm\"
-
-  3. Manually downgrade to npm 10 and retry:
-         npm install -g npm@10
-         npm install -g $Pkg
 
 Full diagnostic log:
          npm install -g $Pkg --loglevel=verbose
@@ -528,6 +565,20 @@ if (-not $AdpaiCmd -and $script:AltPrefix) {
   # the npm-global prefix, so look at the alt-prefix shim directly.
   foreach ($ext in @('.cmd', '.ps1', '')) {
     $candidate = Join-Path $script:AltPrefix "adpai$ext"
+    if (Test-Path $candidate) { $AdpaiCmd = $candidate; break }
+  }
+}
+if (-not $AdpaiCmd) {
+  # Also check pnpm's global bin dir (used by attempt 4).
+  $pnpmCandidates = @(
+    (Join-Path $env:LOCALAPPDATA 'pnpm\adpai.cmd'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\adpai.ps1'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\adpai'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\bin\adpai.cmd'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\bin\adpai.ps1'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\bin\adpai')
+  )
+  foreach ($candidate in $pnpmCandidates) {
     if (Test-Path $candidate) { $AdpaiCmd = $candidate; break }
   }
 }

@@ -132,7 +132,30 @@ fi
 ok "Feed reachable — latest $PKG = $VER"
 
 say "Installing $PKG globally"
-npm install -g "$PKG" >/dev/null
+if ! npm install -g "$PKG" >/dev/null 2>&1; then
+  # npm install can fail on machines with aggressive AV / file indexing because
+  # the deeply nested @opentelemetry + @grpc tree triggers npm 11's reify-cleanup
+  # bug ('Cannot destructure property package of node.target as it is null').
+  # Fall back to pnpm, which hard-links from a content-addressable store and
+  # does not exhibit this failure mode. Same install backend, npm stays usable
+  # for everything else.
+  warn 'npm install failed. Falling back to pnpm (resilient install backend).'
+  if ! command -v pnpm >/dev/null 2>&1; then
+    say 'Installing pnpm (one-time, ~5 MB, used as install backend only)...'
+    npm install -g pnpm >/dev/null 2>&1 || die "Could not install pnpm fallback either. Run: npm install -g $PKG --loglevel=verbose for full output."
+  fi
+  # pnpm setup creates ~/.local/share/pnpm and adds it to the shell rc file.
+  # Run it silently; the only failure case is 'already configured', which is fine.
+  pnpm setup >/dev/null 2>&1 || true
+  PNPM_BIN="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+  export PATH="$PNPM_BIN:$PATH"
+  say "Installing $PKG via pnpm (this is the resilient path)."
+  pnpm add -g "$PKG" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
+  ok 'Installed via pnpm. (pnpm is now your global install backend for adpai; npm still works for everything else.)'
+  echo ''
+  echo "NOTE: pnpm added $PNPM_BIN to your shell rc file."
+  echo "      Open a NEW terminal (or 'source ~/.bashrc' / 'source ~/.zshrc') so 'adpai' resolves on PATH."
+fi
 ok "Installed: $(adpai --version 2>/dev/null || echo "$PKG@$VER")"
 
 # ---------- Done ----------
