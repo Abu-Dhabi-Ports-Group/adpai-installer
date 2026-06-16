@@ -150,7 +150,9 @@ if ! npm install -g "$PKG" >/dev/null 2>&1; then
   PNPM_BIN="${PNPM_HOME:-$HOME/.local/share/pnpm}"
   export PATH="$PNPM_BIN:$PATH"
   say "Installing $PKG via pnpm (this is the resilient path)."
-  pnpm add -g "$PKG" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
+  # Pin @latest so pnpm ignores any stale version already in its global lockfile
+  # and pulls fresh.
+  pnpm add -g "$PKG@latest" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
   ok 'Installed via pnpm. (pnpm is now your global install backend for adpai; npm still works for everything else.)'
   echo ''
   echo "NOTE: pnpm added $PNPM_BIN to your shell rc file."

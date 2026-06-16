@@ -309,7 +309,11 @@ function Invoke-AdpaiCliBootstrap {
       $arguments += @('-ExecutionPolicy', 'Bypass')
     }
     $arguments += @('-File', $cliScriptPath)
-    & $powerShellCmd @arguments
+    # Pipe the inner script's output to Out-Host so it doesn't pollute this
+    # function's return value. Without this, pnpm progress / npm http lines get
+    # captured into the output stream and $cliExit becomes an array like
+    # @(...output..., 0), which trips 'if ($cliExit -ne 0)' as truthy.
+    & $powerShellCmd @arguments 2>&1 | Out-Host
     return $LASTEXITCODE
   } catch {
     Warn "CLI bootstrap failed: $($_.Exception.Message)"

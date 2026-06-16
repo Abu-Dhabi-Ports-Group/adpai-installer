@@ -505,8 +505,9 @@ if ($installExit -ne 0) {
     $oldErrorActionPreference = $ErrorActionPreference
     try {
       $ErrorActionPreference = 'Continue'
-      # 'pnpm add -g' is the equivalent of 'npm install -g'.
-      & $pnpmCmd add -g $Pkg
+      # 'pnpm add -g' is the equivalent of 'npm install -g'. Pin @latest so pnpm
+      # ignores any stale version already in its global lockfile and pulls fresh.
+      & $pnpmCmd add -g "$Pkg@latest"
       $installExit = $LASTEXITCODE
     } finally {
       $ErrorActionPreference = $oldErrorActionPreference
