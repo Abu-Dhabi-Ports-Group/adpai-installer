@@ -371,6 +371,37 @@ try {
     Die "No .vsix found in downloaded package."
   }
 
+  # Refuse to install a version that we know crashes at activate() so that the
+  # default 'iwr | iex' one-liner never silently leaves a user with a broken
+  # extension. 1.1.122 - 1.1.124 ship with the bundled-recommender
+  # import.meta.url crash; the fix lands in 2.1.2 and later. The user can
+  # still opt in explicitly by passing -Version.
+  $brokenVersions = @('1.1.122', '1.1.123', '1.1.124')
+  if ($Version -eq '*' -and ($vsix.BaseName -split '-' | Select-Object -Last 1) -in $brokenVersions) {
+    $badVersion = ($vsix.BaseName -split '-' | Select-Object -Last 1)
+    Die @"
+The latest published version ($($vsix.Name)) has a known activation crash that
+disables Sign In and every command. Refusing to install it automatically.
+
+Recommended actions, in order:
+
+  1. Install the last known-good 1.x release (works today):
+       iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-vsix.ps1 -OutFile install-vsix.ps1
+       pwsh ./install-vsix.ps1 -Version 1.1.121
+
+  2. If a fixed 2.x has been published since this script was written, install
+     it explicitly with -Version 2.1.3 (or later).
+
+  3. Or use the direct GitHub VSIX fallback:
+       iwr -useb https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-ai-sdlc-latest.vsix ``
+         -OutFile `$env:TEMP\adp-ai-sdlc-latest.vsix
+       code --install-extension `$env:TEMP\adp-ai-sdlc-latest.vsix --force
+
+To override this guard anyway, request the broken version explicitly with
+-Version $badVersion.
+"@
+  }
+
   Say "Installing $($vsix.Name) into VS Code"
   & $CodeCmd --install-extension $vsix.FullName --force
 

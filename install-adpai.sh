@@ -136,27 +136,68 @@ if ! npm install -g "$PKG" >/dev/null 2>&1; then
   # npm install can fail on machines with aggressive AV / file indexing because
   # the deeply nested @opentelemetry + @grpc tree triggers npm 11's reify-cleanup
   # bug ('Cannot destructure property package of node.target as it is null').
-  # Fall back to pnpm, which hard-links from a content-addressable store and
-  # does not exhibit this failure mode. Same install backend, npm stays usable
-  # for everything else.
-  warn 'npm install failed. Falling back to pnpm (resilient install backend).'
-  if ! command -v pnpm >/dev/null 2>&1; then
-    say 'Installing pnpm (one-time, ~5 MB, used as install backend only)...'
-    npm install -g pnpm >/dev/null 2>&1 || die "Could not install pnpm fallback either. Run: npm install -g $PKG --loglevel=verbose for full output."
+  # Mirror the Windows installer's 4-attempt resilience chain:
+  #   1. plain  npm install -g                          (already failed above)
+  #   2. retry  npm install -g --maxsockets=1           (serialize extraction)
+  #   3. retry  npm install -g --prefix ~/.adpai/npm    (writable alt prefix)
+  #   4. pnpm add -g                                    (content-addressable store)
+  installed=0
+
+  warn 'npm install failed. Retrying with --maxsockets=1 (slower, AV-friendly).'
+  if npm install -g "$PKG" --no-fund --no-audit --maxsockets=1 \
+      --fetch-retries=5 --fetch-retry-mintimeout=2000 >/dev/null 2>&1; then
+    installed=1
   fi
-  # pnpm setup creates ~/.local/share/pnpm and adds it to the shell rc file.
-  # Run it silently; the only failure case is 'already configured', which is fine.
-  pnpm setup >/dev/null 2>&1 || true
-  PNPM_BIN="${PNPM_HOME:-$HOME/.local/share/pnpm}"
-  export PATH="$PNPM_BIN:$PATH"
-  say "Installing $PKG via pnpm (this is the resilient path)."
-  # Pin @latest so pnpm ignores any stale version already in its global lockfile
-  # and pulls fresh.
-  pnpm add -g "$PKG@latest" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
-  ok 'Installed via pnpm. (pnpm is now your global install backend for adpai; npm still works for everything else.)'
-  echo ''
-  echo "NOTE: pnpm added $PNPM_BIN to your shell rc file."
-  echo "      Open a NEW terminal (or 'source ~/.bashrc' / 'source ~/.zshrc') so 'adpai' resolves on PATH."
+
+  if [ "$installed" -eq 0 ]; then
+    # Alt prefix bypasses the default global prefix that may be mounted on
+    # a read-only / synced / scanned directory (NFS home, Time Machine, MDM).
+    ALT_PREFIX="$HOME/.adpai/npm"
+    warn "Retry failed. Installing $PKG to alternate prefix $ALT_PREFIX (silent)."
+    rm -rf "$ALT_PREFIX" 2>/dev/null || true
+    mkdir -p "$ALT_PREFIX"
+    if npm install -g "$PKG" --prefix "$ALT_PREFIX" --no-fund --no-audit \
+        --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 >/dev/null 2>&1; then
+      installed=1
+      ALT_BIN="$ALT_PREFIX/bin"
+      export PATH="$ALT_BIN:$PATH"
+      # Persist on the shell rc so future terminals find 'adpai'.
+      for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        if [ -f "$rc" ] && ! grep -Fq "$ALT_BIN" "$rc"; then
+          printf '\n# Added by adpai installer for alternate npm prefix\nexport PATH="%s:$PATH"\n' "$ALT_BIN" >> "$rc"
+        fi
+      done
+      ok "Installed $PKG to $ALT_PREFIX and added to shell rc PATH."
+      echo "  Open a NEW terminal (or 'source ~/.bashrc' / 'source ~/.zshrc') so 'adpai' resolves on PATH."
+    fi
+  fi
+
+  if [ "$installed" -eq 0 ]; then
+    # Final fallback: pnpm hard-links from a content-addressable store and
+    # does not exhibit the parallel-extract / bulk-rmdir EPERM cascade that
+    # breaks npm 11 on Defender / Crowdstrike / Indexer-heavy filesystems.
+    warn 'Third attempt failed. Falling back to pnpm (silent).'
+    if ! command -v pnpm >/dev/null 2>&1; then
+      say 'Installing pnpm (one-time, ~5 MB, used as install backend only)...'
+      npm install -g pnpm >/dev/null 2>&1 || die "Could not install pnpm fallback either. Run: npm install -g $PKG --loglevel=verbose for full output."
+    fi
+    # pnpm setup creates ~/.local/share/pnpm and adds it to the shell rc file.
+    # Run it silently; the only failure case is 'already configured', which is fine.
+    pnpm setup >/dev/null 2>&1 || true
+    PNPM_BIN="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+    export PATH="$PNPM_BIN:$PATH"
+    say "Installing $PKG via pnpm (this is the resilient path)."
+    # Pin @latest so pnpm ignores any stale version already in its global lockfile
+    # and pulls fresh.
+    pnpm add -g "$PKG@latest" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
+    installed=1
+    ok 'Installed via pnpm. (pnpm is now your global install backend for adpai; npm still works for everything else.)'
+    echo ''
+    echo "NOTE: pnpm added $PNPM_BIN to your shell rc file."
+    echo "      Open a NEW terminal (or 'source ~/.bashrc' / 'source ~/.zshrc') so 'adpai' resolves on PATH."
+  fi
+
+  [ "$installed" -eq 1 ] || die "All install attempts (npm, npm --maxsockets=1, npm alt-prefix, pnpm) failed."
 fi
 ok "Installed: $(adpai --version 2>/dev/null || echo "$PKG@$VER")"
 

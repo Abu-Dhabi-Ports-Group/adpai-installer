@@ -184,7 +184,43 @@ if [[ -z "$VSIX" || ! -f "$VSIX" ]]; then
   exit 1
 fi
 
-echo ">> Installing $(basename "$VSIX") into VS Code ..."
+# Refuse to install a version that we know crashes at activate() so that the
+# default 'iwr | bash' one-liner never silently leaves a user with a broken
+# extension. 1.1.122 - 1.1.124 ship with the bundled-recommender
+# import.meta.url crash; the fix lands in 2.1.2 and later. The user can still
+# opt in explicitly by passing the version as the first arg.
+BROKEN_VERSIONS_REGEX='adp-ai-sdlc-(1\.1\.122|1\.1\.123|1\.1\.124)\.vsix$'
+VSIX_BASENAME="$(basename "$VSIX")"
+if [[ "$VERSION" == "*" && "$VSIX_BASENAME" =~ $BROKEN_VERSIONS_REGEX ]]; then
+  cat >&2 <<EOM
+
+ERROR: The latest published version ($VSIX_BASENAME) has a known activation crash
+       that disables Sign In and every command. Refusing to install it
+       automatically.
+
+Recommended actions, in order:
+
+  1. Install the last known-good 1.x release (works today):
+       bash install-vsix.sh 1.1.121
+
+  2. If a fixed 2.x has been published since this script was written, install
+       it explicitly:
+       bash install-vsix.sh 2.1.3
+
+  3. Or use the direct GitHub VSIX fallback:
+       curl -fsSL -o /tmp/adp-ai-sdlc-latest.vsix \\
+         https://github.com/Abu-Dhabi-Ports-Group/adpai-installer/raw/main/adp-ai-sdlc-latest.vsix
+       code --install-extension /tmp/adp-ai-sdlc-latest.vsix --force
+
+To override this guard anyway, request the broken version explicitly:
+       bash install-vsix.sh ${VSIX_BASENAME#adp-ai-sdlc-}
+       (omitted .vsix suffix)
+
+EOM
+  exit 1
+fi
+
+echo ">> Installing $VSIX_BASENAME into VS Code ..."
 code --install-extension "$VSIX" --force
 
 if [[ "$SKIP_CLI" -eq 0 ]]; then
@@ -196,7 +232,7 @@ if [[ "$SKIP_CLI" -eq 0 ]]; then
       echo "  curl -fsSL $CLI_INSTALLER_URL | bash" >&2
     }
   else
-    echo "WARN: curl not found \u2014 skipping CLI bootstrap. Install manually:" >&2
+    echo "WARN: curl not found -- skipping CLI bootstrap. Install manually:" >&2
     echo "  curl -fsSL $CLI_INSTALLER_URL | bash" >&2
   fi
 else
