@@ -4,8 +4,26 @@ Public bootstrap installers for the AD Ports SDLC AI tooling:
 
 - [`@adports/aidev`](https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/Npm/@adports%2Faidev/overview) — the CLI catalog scaffolder
 - [`adports.adp-ai-sdlc`](https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix) — the VS Code extension
+- `adp-ai-sdlc-codex` — the Codex Desktop plugin (hosted plugin server)
+- `adp-ai-sdlc-claude` — the Claude Code plugin (same server, separate marketplace)
 
 These scripts are mirrored from [`ai-skills/catalog/public-installers/`](https://dev.azure.com/abudhabiports/Foundations/_git/ai-skills?path=/catalog/public-installers). The source of truth is `ai-skills`; do not edit files in this repo directly.
+
+## Install everything in one go
+
+Mac / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-all.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-all.ps1 | iex
+```
+
+`install-all` installs the CLI + VS Code extension unconditionally, then installs the Codex plugin if the `codex` CLI is present and the Claude plugin if the `claude` CLI is present. Missing host CLIs are skipped with a warning; failures in the optional plugin steps do **not** block the overall install.
 
 ## ADP AI CLI (`@adports/aidev`)
 
@@ -83,6 +101,38 @@ Invoke-Expression "$($script.Content); & { param([string]`$Version='2.0.1') }"
 The Windows VSIX installer does not silently install Azure CLI, VS Code, or Chocolatey. If a prerequisite is missing, install it through Company Portal / Software Center or an approved user-scope installer, then rerun the one-liner.
 
 The user must have **Feed Reader** on both the [`adpai-vsix` feed](https://dev.azure.com/abudhabiports/Foundations/_artifacts/feed/adpai-vsix/settings/permissions) (VSIX) and the [`adpai` feed](https://dev.azure.com/abudhabiports/_artifacts/feed/adpai/settings/permissions) (CLI). The scripts contain no secrets.
+
+## Codex Desktop plugin (`adp-ai-sdlc-codex`)
+
+Mac / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-codex-plugin.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-codex-plugin.ps1 | iex
+```
+
+Requires Codex Desktop and its `codex` CLI on PATH. The installer registers the AD Ports marketplace URL and installs the plugin; sign-in happens in the Codex Desktop UI on first use (uses your existing AD Ports Microsoft account — no PAT, no secrets in this script).
+
+## Claude Code plugin (`adp-ai-sdlc-claude`)
+
+Mac / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-claude-plugin.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-claude-plugin.ps1 | iex
+```
+
+Requires Claude Code and its `claude` CLI on PATH. The installer prints the two `/plugin` commands to run inside any Claude Code session to register and install the plugin.
 
 ## What the CLI installer does
 
