@@ -1,19 +1,24 @@
 # Privacy Policy — AD Ports AI Catalog (Browser Extension)
 
-_Last updated: 2026-06-17_
+_Last updated: 2026-06-26_
 
 The **AD Ports AI Catalog** browser extension (Chrome / Edge MV3) is published by
 the AD Ports Group AI SDLC team. This document explains exactly what the
-extension does and does not do with your data.## Summary
+extension does and does not do with your data.
+
+## Summary
 
 - The extension **does not collect, transmit, sell, or share** any personal data.
-- It makes **no network requests** to any AD Ports server, third party, analytics
-  provider, or telemetry endpoint.
-- The full skill catalog (skill metadata, SKILL.md bodies, workflows,
+- It makes **no network requests by default**. The only outbound request the
+  extension can make is an **optional** catalog-refresh `GET` to a URL **you
+  type yourself** in Settings (empty by default); the request carries no prompt
+  text, no reply text, no cookies, no user identifier.
+- The full skill catalog (skill metadata, `SKILL.md` bodies, workflows,
   references, templates) is **bundled inside the extension package** at build
   time and loaded locally from your browser's extension storage.
 - All user preferences (favorites, recents, settings, PII-guard toggle) are
-  stored locally via `chrome.storage.local` and **never leave your device**.
+  stored locally via `chrome.storage.local` / `chrome.storage.sync` and
+  **never leave your device**.
 
 ## What the extension does
 
@@ -21,13 +26,16 @@ extension does and does not do with your data.## Summary
   (Claude, ChatGPT, Gemini, Perplexity, GitHub Copilot) **only inside your
   browser tab** in order to:
   - detect `//skill-id` and `@@role-id` palette triggers,
-  - run the optional pre-send PII guard against locally-defined patterns,
+  - run the optional pre-send PII / data-classification guard against
+    locally-defined patterns,
   - rank suggestions to display in the side panel.
 - Inserts skill / role preamble text into the chat input when you click
   **Insert into prompt**, press a favorite keyboard shortcut, or commit the
   palette.
-- Optionally saves the assistant's reply to disk (via the browser's standard
-  download flow) as a Markdown artifact, only when you click **Save**.
+- Optionally saves the assistant's reply to disk as a Markdown artifact when
+  you click **Save**. The save action is implemented entirely in the page as
+  a client-side `<a download>` link backed by a `Blob` URL; the extension does
+  **not** use the `chrome.downloads` API.
 
 ## What the extension does NOT do
 
@@ -37,31 +45,65 @@ extension does and does not do with your data.## Summary
 - No reading or writing of cookies, authentication tokens, conversation
   history, or account information of the AI chat sites.
 - No transmission of your prompt text, the assistant's reply, your favorites,
-  your settings, or any usage signal to any server.
+  your settings, or any usage signal to any AD Ports server, chat host, or
+  third party.
 
-## Permissions justification
+## Permissions justification (v1.1.2)
 
 | Permission | Why it is required |
 |---|---|
-| `storage` | Persist favorites, recents, and the PII-guard tenant toggle locally. |
-| `scripting` | Inject the skill preamble text into the prompt input on supported chat sites. |
+| `storage` | Persist favorites, recents, settings, the PII-guard tenant toggle, and the PII override audit log locally. |
 | `sidePanel` | Display the catalog UI in Chrome's side panel. |
-| `activeTab` | Identify the active supported chat tab when you click Insert. |
-| `downloads` | Save assistant replies to disk as Markdown when you click Save. |
-| Host permissions for `claude.ai`, `chatgpt.com`, `chat.openai.com`, `gemini.google.com`, `perplexity.ai`, `github.com/copilot` | Detect each site's prompt input and reply DOM to enable insert and save. |
+| `alarms` | Schedule a best-effort 24-hour catalog snapshot refresh from the background service worker. The alarm only triggers a metadata refresh and never collects, transmits, or reacts to user data. |
+| Host permissions for `claude.ai`, `chatgpt.com`, `chat.openai.com`, `gemini.google.com`, `www.perplexity.ai`, `github.com/copilot` | Detect each site's prompt input and reply DOM to enable insert, the pre-send guard, and save. |
+
+The extension deliberately does **not** request `activeTab`, `tabs`,
+`scripting`, `downloads`, `webRequest`, `cookies`, `history`, `bookmarks`,
+`notifications`, `nativeMessaging`, `identity`, `geolocation`, or
+`<all_urls>`. Content scripts are statically declared, the save-reply action
+uses a client-side `<a download>` Blob link, and `host_permissions` cover
+every target the extension talks to.
 
 ## Data we store locally
 
 | Item | Storage | Leaves your device? |
 |---|---|---|
-| Favorite skill / role IDs | `chrome.storage.local` | No |
-| Recent skill / role IDs | `chrome.storage.local` | No |
-| Settings (PII-guard tenant toggle, etc.) | `chrome.storage.local` | No |
-| Last-invoked skill ID (for Save context) | `chrome.storage.local` | No |
+| Favorite skill / role IDs | `chrome.storage.local` and `chrome.storage.sync` (`adp.favorites`) | No |
+| Recent skill / role IDs | `chrome.storage.local` (`adp.recents`) | No |
+| Settings (tenant toggle, optional catalog URL, GitHub target repo, override-allowed flag, custom rules) | `chrome.storage.sync` (`adp.settings`) | No |
+| Catalog snapshot cache | `chrome.storage.local` (`adp.catalog`) | No |
+| PII / data-classification override audit log | `chrome.storage.local` (`adp.pii.auditLog`) — stores only the matched rule IDs and a 16-character SHA-256 hash prefix of the prompt; **never the prompt itself** | No |
 | Catalog (`catalog.json`, `skill-bundles.json`) | Bundled at build time | No (already on disk) |
 
 You can clear all of this at any time by removing the extension from
-`chrome://extensions`.
+`chrome://extensions`, or clear the PII audit log on its own from the side
+panel's Settings.
+
+## Limited Use disclosure
+
+The use of the data described above adheres to the
+[Chrome Web Store User Data Policy](https://developer.chrome.com/docs/webstore/program-policies/user-data-faq)
+and its Limited Use requirements:
+
+- **Allowed use only.** The data is used solely to provide the extension's
+  single insert-guard-capture purpose (insert a catalog entry into the
+  prompt, check the prompt against the data-classification rules before
+  send, and capture the assistant's reply on user click). It is not used
+  for any other product feature, model training, profiling, or aggregation.
+- **No transfer.** The data is not transferred to AD Ports servers, the
+  chat host's servers, or any third party. It does not leave the browser.
+  The only outbound network call the extension can make is the optional
+  user-configured catalog-refresh `GET` to the URL the user typed in
+  Settings, and that request carries no prompt text, no reply text, no
+  cookies, and no user identifier.
+- **No advertising.** The data is not used for advertising of any kind,
+  including personalized or retargeted advertising. The extension contains
+  no advertising SDK and no advertising endpoint.
+- **No humans read it.** No human at AD Ports Group, no human at Google,
+  and no third party reads the user's prompt text, reply text, or tab URLs,
+  except (a) with the user's affirmative consent for a specific instance,
+  (b) when required to comply with applicable law, or (c) for security
+  investigation of suspected abuse of the extension.
 
 ## Children's privacy
 
