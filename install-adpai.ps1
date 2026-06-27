@@ -388,10 +388,13 @@ Repair-CorporateTls
 # and may hit the EPERM/'node.target is null' bug before we get a chance to retry.
 Reset-StaleAdpaiInstall
 # Stream npm output live (no pipe / no Tee, those buffer the npm http fetch lines).
+# Pin @latest so re-running the installer ALWAYS upgrades past a stale local
+# install — without it, npm short-circuits on the cached package.json when the
+# global already has any version of $Pkg.
 $oldErrorActionPreference = $ErrorActionPreference
 try {
   $ErrorActionPreference = 'Continue'
-  & $NpmCmd install -g $Pkg --no-fund --no-audit --loglevel=http
+  & $NpmCmd install -g "$Pkg@latest" --no-fund --no-audit --loglevel=http
   $installExit = $LASTEXITCODE
 } finally {
   $ErrorActionPreference = $oldErrorActionPreference
@@ -411,7 +414,7 @@ if ($installExit -ne 0) {
   $oldErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    & $NpmCmd install -g $Pkg --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
+    & $NpmCmd install -g "$Pkg@latest" --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
     $installExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference
@@ -435,7 +438,7 @@ function Install-AdpaiAtAltPrefix ($npmExe) {
   $exitCode = 1
   try {
     $ErrorActionPreference = 'Continue'
-    & $npmExe install -g $Pkg --prefix $script:AltPrefix --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
+    & $npmExe install -g "$Pkg@latest" --prefix $script:AltPrefix --no-fund --no-audit --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 --loglevel=http
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldErrorActionPreference

@@ -132,7 +132,10 @@ fi
 ok "Feed reachable — latest $PKG = $VER"
 
 say "Installing $PKG globally"
-if ! npm install -g "$PKG" >/dev/null 2>&1; then
+# Pin @latest so re-running the installer ALWAYS upgrades past a stale local
+# install — without it, npm short-circuits on the cached package.json when the
+# global already has any version of $PKG.
+if ! npm install -g "${PKG}@latest" >/dev/null 2>&1; then
   # npm install can fail on machines with aggressive AV / file indexing because
   # the deeply nested @opentelemetry + @grpc tree triggers npm 11's reify-cleanup
   # bug ('Cannot destructure property package of node.target as it is null').
@@ -144,7 +147,7 @@ if ! npm install -g "$PKG" >/dev/null 2>&1; then
   installed=0
 
   warn 'npm install failed. Retrying with --maxsockets=1 (slower, AV-friendly).'
-  if npm install -g "$PKG" --no-fund --no-audit --maxsockets=1 \
+  if npm install -g "${PKG}@latest" --no-fund --no-audit --maxsockets=1 \
       --fetch-retries=5 --fetch-retry-mintimeout=2000 >/dev/null 2>&1; then
     installed=1
   fi
@@ -156,7 +159,7 @@ if ! npm install -g "$PKG" >/dev/null 2>&1; then
     warn "Retry failed. Installing $PKG to alternate prefix $ALT_PREFIX (silent)."
     rm -rf "$ALT_PREFIX" 2>/dev/null || true
     mkdir -p "$ALT_PREFIX"
-    if npm install -g "$PKG" --prefix "$ALT_PREFIX" --no-fund --no-audit \
+    if npm install -g "${PKG}@latest" --prefix "$ALT_PREFIX" --no-fund --no-audit \
         --maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=2000 >/dev/null 2>&1; then
       installed=1
       ALT_BIN="$ALT_PREFIX/bin"
