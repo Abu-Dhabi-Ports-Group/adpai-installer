@@ -528,7 +528,15 @@ if ($installExit -ne 0) {
         }
         [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
       } catch { }
-      Ok 'Installed via pnpm. (pnpm is now your global install backend; npm still works for everything else.)'
+      Ok 'Installed via pnpm (last-resort path).'
+      Write-Host ''
+      Warn 'Heads-up: pnpm-managed global bin shims are fragile on Windows Defender / Crowdstrike machines.'
+      Write-Host "  Symptom: 'adpai: No such file or directory' some time after install (the pnpm shim got quarantined)."
+      Write-Host '  Migration to the stable npm-global path (recommended whenever npm starts working again):'
+      Write-Host "      pnpm rm -g $Pkg"
+      Write-Host "      npm  install -g $Pkg@latest"
+      Write-Host '  The ADP AI VS Code extension always issues npm install for updates, so installing it will'
+      Write-Host '  migrate you automatically on the next CLI update.'
     }
   } else {
     Warn 'Could not install pnpm either; cannot run final fallback.'
@@ -542,22 +550,27 @@ Failed to install $Pkg globally after 4 attempts (npm exit $installExit).
 This is npm 11's 'node.target is null' reify bug, triggered when Windows Defender
 or a search indexer briefly locks files inside the deeply nested @opentelemetry tree.
 
-Try this (proven to work on Defender-protected machines):
+Recommended fixes, in priority order:
 
-    npm install -g pnpm
-    pnpm setup
-    # close ALL PowerShell windows, open a fresh one, then:
-    pnpm add -g $Pkg
-    adpai --version
-
-Other options if pnpm is blocked:
-
-  1. Run PowerShell as Administrator and re-run the installer:
+  1. Exclude the npm install locations from Windows Defender real-time scanning,
+     then re-run the installer (most reliable, requires admin once):
+         Add-MpPreference -ExclusionPath \"$env:APPDATA\npm\"
+         Add-MpPreference -ExclusionPath \"$env:LOCALAPPDATA\adpai\npm\"
          iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
 
-  2. Exclude the global npm folder from Windows Defender real-time scanning,
-     then re-run the installer:
-         Add-MpPreference -ExclusionPath \"$env:APPDATA\npm\"
+  2. Run PowerShell as Administrator and re-run the installer:
+         iwr -useb https://raw.githubusercontent.com/Abu-Dhabi-Ports-Group/adpai-installer/main/install-adpai.ps1 | iex
+
+  3. Last resort: install via pnpm. WARNING: pnpm-managed global bin shims are
+     frequently quarantined by Windows Defender on AD Ports machines, which leaves
+     'adpai' broken with 'No such file or directory' some time after install.
+     Use only if (1) and (2) are blocked, and migrate to npm via the ADP AI VS Code
+     extension's next CLI update (it always issues npm install):
+         npm install -g pnpm
+         pnpm setup
+         # close ALL PowerShell windows, open a fresh one, then:
+         pnpm add -g $Pkg
+         adpai --version
 
 Full diagnostic log:
          npm install -g $Pkg --loglevel=verbose

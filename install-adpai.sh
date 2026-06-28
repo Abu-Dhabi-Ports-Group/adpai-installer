@@ -179,7 +179,9 @@ if ! npm install -g "${PKG}@latest" >/dev/null 2>&1; then
     # Final fallback: pnpm hard-links from a content-addressable store and
     # does not exhibit the parallel-extract / bulk-rmdir EPERM cascade that
     # breaks npm 11 on Defender / Crowdstrike / Indexer-heavy filesystems.
-    warn 'Third attempt failed. Falling back to pnpm (silent).'
+    # NOTE: pnpm-managed global bin shims can later be quarantined by Defender;
+    # users should be migrated to the npm-global path as soon as npm works.
+    warn 'Third attempt failed. Falling back to pnpm (silent, last-resort).'
     if ! command -v pnpm >/dev/null 2>&1; then
       say 'Installing pnpm (one-time, ~5 MB, used as install backend only)...'
       npm install -g pnpm >/dev/null 2>&1 || die "Could not install pnpm fallback either. Run: npm install -g $PKG --loglevel=verbose for full output."
@@ -189,15 +191,23 @@ if ! npm install -g "${PKG}@latest" >/dev/null 2>&1; then
     pnpm setup >/dev/null 2>&1 || true
     PNPM_BIN="${PNPM_HOME:-$HOME/.local/share/pnpm}"
     export PATH="$PNPM_BIN:$PATH"
-    say "Installing $PKG via pnpm (this is the resilient path)."
+    say "Installing $PKG via pnpm (last-resort path)."
     # Pin @latest so pnpm ignores any stale version already in its global lockfile
     # and pulls fresh.
     pnpm add -g "$PKG@latest" || die "pnpm add -g $PKG also failed. Run: pnpm add -g $PKG --reporter=ndjson for full output."
     installed=1
-    ok 'Installed via pnpm. (pnpm is now your global install backend for adpai; npm still works for everything else.)'
+    ok 'Installed via pnpm (last-resort path).'
     echo ''
     echo "NOTE: pnpm added $PNPM_BIN to your shell rc file."
     echo "      Open a NEW terminal (or 'source ~/.bashrc' / 'source ~/.zshrc') so 'adpai' resolves on PATH."
+    echo ''
+    warn 'Heads-up: pnpm-managed global bin shims are fragile on Windows Defender / Crowdstrike machines.'
+    echo "  Symptom: 'adpai: No such file or directory' some time after install (the pnpm shim got quarantined)."
+    echo '  Migration to the stable npm-global path (recommended whenever npm starts working again):'
+    echo "      pnpm rm -g $PKG"
+    echo "      npm  install -g $PKG@latest"
+    echo '  The ADP AI VS Code extension always issues npm install for updates, so installing it will'
+    echo '  migrate you automatically on the next CLI update.'
   fi
 
   [ "$installed" -eq 1 ] || die "All install attempts (npm, npm --maxsockets=1, npm alt-prefix, pnpm) failed."
