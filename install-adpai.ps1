@@ -169,6 +169,29 @@ function Invoke-Native ($filePath, $arguments) {
     Output = @($output)
   }
 }
+function Resolve-LongPath ($path) {
+  # Expand legacy 8.3 short-path segments (e.g. MOHSIN~1.AZA) to their long form.
+  # Required because %TEMP% on profiles whose username contains a dot is often
+  # inherited as the short form, and Push-Location / PSProviders fail on it
+  # when NTFS 8.3 name generation is disabled on the volume.
+  if (-not $path) { return $path }
+  try {
+    if (-not ('AdpaiInstaller.Win32PathUtils' -as [type])) {
+      Add-Type -Namespace AdpaiInstaller -Name Win32PathUtils -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
+public static extern int GetLongPathName(string shortPath, System.Text.StringBuilder longPath, int bufferSize);
+'@
+    }
+    $sb = New-Object System.Text.StringBuilder 1024
+    $len = [AdpaiInstaller.Win32PathUtils]::GetLongPathName($path, $sb, $sb.Capacity)
+    if ($len -gt 0 -and $len -lt $sb.Capacity) {
+      return $sb.ToString()
+    }
+  } catch {
+    # fall through to original path
+  }
+  return $path
+}
 function Resolve-Cmd ($name) {
   $commands = @(Get-Command $name -All -ErrorAction SilentlyContinue)
   if ($commands.Count -eq 0) { return $null }
@@ -300,8 +323,19 @@ Ok 'vsts-npm-auth ready'
 
 # ---------- Project-scoped .npmrc for vsts-npm-auth to read ----------
 $tempRoot = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+$tempRoot = Resolve-LongPath $tempRoot
+if (-not (Test-Path $tempRoot)) {
+  $fallbackTemp = if ($env:USERPROFILE) { Join-Path (Resolve-LongPath $env:USERPROFILE) 'AppData\Local\Temp' } else { $null }
+  if ($fallbackTemp -and (Test-Path $fallbackTemp)) {
+    Warn "TEMP path '$tempRoot' is not accessible; falling back to '$fallbackTemp'."
+    $tempRoot = $fallbackTemp
+  } else {
+    Die "Cannot locate a usable TEMP directory (tried '$tempRoot'). Set `$env:TEMP to an existing folder and re-run."
+  }
+}
 $work = Join-Path $tempRoot "adpai-bootstrap-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+$work = Resolve-LongPath $work
 $projectNpmrc = Join-Path $work '.npmrc'
 @(
   "@adports:registry=$FeedUrl"
