@@ -138,6 +138,35 @@ function Invoke-Native ($filePath, $arguments) {
   }
 }
 
+function Install-VsixIntoVsCode ($codeCmd, $vsixPath) {
+  # `code` is an Electron binary. When this installer runs from a context that
+  # inherited ELECTRON_RUN_AS_NODE / VSCODE_* env vars (VS Code's integrated
+  # terminal, the extension's own updater terminal, or any Electron-spawned
+  # parent), `code --install-extension` aborts with
+  #   [ERROR:icu_util.cc] Invalid file descriptor to ICU data received.
+  # Clear those variables for the child `code` process so the CLI launches
+  # cleanly, then restore them afterwards.
+  $electronVars = @(
+    'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'ELECTRON_NO_ASAR',
+    'ELECTRON_FORCE_IS_PACKAGED', 'VSCODE_PID', 'VSCODE_CWD', 'VSCODE_IPC_HOOK',
+    'VSCODE_IPC_HOOK_CLI', 'VSCODE_NLS_CONFIG', 'VSCODE_CODE_CACHE_PATH',
+    'VSCODE_ESM_ENTRYPOINT', 'VSCODE_HANDLES_UNCAUGHT_ERRORS',
+    'VSCODE_L10N_BUNDLE_LOCATION', 'VSCODE_CRASH_REPORTER_PROCESS_TYPE'
+  )
+  $saved = @{}
+  foreach ($v in $electronVars) {
+    $saved[$v] = [Environment]::GetEnvironmentVariable($v, 'Process')
+    if ($null -ne $saved[$v]) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+  }
+  try {
+    return Invoke-Native $codeCmd @('--install-extension', $vsixPath, '--force')
+  } finally {
+    foreach ($v in $electronVars) {
+      if ($null -ne $saved[$v]) { [Environment]::SetEnvironmentVariable($v, $saved[$v], 'Process') }
+    }
+  }
+}
+
 function Ensure-AzureDevOpsAuth ($azCmd, $organizationUrl, $project) {
   Enable-AzureCliCorporateCa | Out-Null
 
@@ -403,7 +432,28 @@ To override this guard anyway, request the broken version explicitly with
   }
 
   Say "Installing $($vsix.Name) into VS Code"
-  & $CodeCmd --install-extension $vsix.FullName --force
+  $install = Install-VsixIntoVsCode $CodeCmd $vsix.FullName
+
+  # `code --install-extension` can print the ICU stderr line (and even exit
+  # non-zero) while the extension is or is not actually installed, so confirm
+  # by listing installed extensions rather than trusting the exit code alone.
+  $listed = Invoke-Native $CodeCmd @('--list-extensions', '--show-versions')
+  $installed = ($listed.ExitCode -eq 0) -and (($listed.Output -join "`n") -match 'adports\.adp-ai-sdlc')
+
+  if ($installed) {
+    Ok "Extension installed: $($vsix.Name)"
+  }
+  else {
+    $icu = ($install.Output -join "`n") -match 'Invalid file descriptor to ICU data'
+    $stableVsix = Join-Path $env:TEMP $vsix.Name
+    try { if ($vsix.FullName -ne $stableVsix) { Copy-Item $vsix.FullName $stableVsix -Force } } catch { $stableVsix = $vsix.FullName }
+    Write-Warning ("VS Code CLI install did not complete" + $(if ($icu) { " (the 'code' CLI hit the ICU data-descriptor error)." } else { "." }))
+    Write-Host ""
+    Write-Host "   Install it via the VS Code UI instead (no 'code' CLI, avoids the ICU error):"
+    Write-Host "     1. In VS Code: Ctrl+Shift+P -> 'Extensions: Install from VSIX...'"
+    Write-Host "     2. Select: $stableVsix"
+    Write-Host "     3. Ctrl+Shift+P -> 'Developer: Reload Window'"
+  }
 
   if (-not $SkipCli) {
     Write-Host ""

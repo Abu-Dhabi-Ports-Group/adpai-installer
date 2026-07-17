@@ -221,7 +221,31 @@ EOM
 fi
 
 echo ">> Installing $VSIX_BASENAME into VS Code ..."
-code --install-extension "$VSIX" --force
+# `code` is an Electron binary. When this installer runs from a context that
+# inherited ELECTRON_RUN_AS_NODE / VSCODE_* env vars (VS Code's integrated
+# terminal, the extension's updater terminal, or any Electron-spawned parent),
+# `code --install-extension` aborts with:
+#   [ERROR:icu_util.cc] Invalid file descriptor to ICU data received.
+# Clear those variables for the child `code` process so the CLI launches cleanly.
+CODE_CLEAN_ENV=(env
+  -u ELECTRON_RUN_AS_NODE -u ELECTRON_NO_ATTACH_CONSOLE -u ELECTRON_NO_ASAR
+  -u ELECTRON_FORCE_IS_PACKAGED -u VSCODE_PID -u VSCODE_CWD -u VSCODE_IPC_HOOK
+  -u VSCODE_IPC_HOOK_CLI -u VSCODE_NLS_CONFIG -u VSCODE_CODE_CACHE_PATH
+  -u VSCODE_ESM_ENTRYPOINT -u VSCODE_HANDLES_UNCAUGHT_ERRORS
+  -u VSCODE_L10N_BUNDLE_LOCATION -u VSCODE_CRASH_REPORTER_PROCESS_TYPE)
+"${CODE_CLEAN_ENV[@]}" code --install-extension "$VSIX" --force || true
+
+# `code --install-extension` can print the ICU stderr line (and even exit
+# non-zero) without a reliable status, so confirm by listing installed extensions.
+if "${CODE_CLEAN_ENV[@]}" code --list-extensions --show-versions 2>/dev/null | grep -qi 'adports.adp-ai-sdlc'; then
+  echo "OK Extension installed: $VSIX_BASENAME"
+else
+  echo "WARN: VS Code CLI install did not complete (the 'code' CLI may have hit the ICU data-descriptor error)." >&2
+  echo "   Install it via the VS Code UI instead (no 'code' CLI, avoids the ICU error):" >&2
+  echo "     1. In VS Code: Ctrl+Shift+P -> 'Extensions: Install from VSIX...'" >&2
+  echo "     2. Select: $VSIX" >&2
+  echo "     3. Ctrl+Shift+P -> 'Developer: Reload Window'" >&2
+fi
 
 if [[ "$SKIP_CLI" -eq 0 ]]; then
   echo
