@@ -448,11 +448,20 @@ To override this guard anyway, request the broken version explicitly with
     $stableVsix = Join-Path $env:TEMP $vsix.Name
     try { if ($vsix.FullName -ne $stableVsix) { Copy-Item $vsix.FullName $stableVsix -Force } } catch { $stableVsix = $vsix.FullName }
     Write-Warning ("VS Code CLI install did not complete" + $(if ($icu) { " (the 'code' CLI hit the ICU data-descriptor error)." } else { "." }))
+    if ($icu) {
+      Write-Host ""
+      Write-Host "   Cause: a known VS Code bug. A Windows auto-update can leave 'code.cmd'"
+      Write-Host "   pointing at a broken Code.exe (microsoft/vscode#287053 / #282920). The"
+      Write-Host "   downloaded extension VSIX is fine - only the 'code' CLI is broken."
+    }
     Write-Host ""
-    Write-Host "   Install it via the VS Code UI instead (no 'code' CLI, avoids the ICU error):"
+    Write-Host "   Option A - install via the VS Code UI (works now, no 'code' CLI):"
     Write-Host "     1. In VS Code: Ctrl+Shift+P -> 'Extensions: Install from VSIX...'"
     Write-Host "     2. Select: $stableVsix"
     Write-Host "     3. Ctrl+Shift+P -> 'Developer: Reload Window'"
+    Write-Host ""
+    Write-Host "   Option B - repair the 'code' CLI: reinstall VS Code (keeps your settings"
+    Write-Host "     and extensions), then rerun this installer. https://code.visualstudio.com/download"
   }
 
   if (-not $SkipCli) {

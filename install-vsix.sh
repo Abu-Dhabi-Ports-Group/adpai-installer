@@ -241,10 +241,16 @@ if "${CODE_CLEAN_ENV[@]}" code --list-extensions --show-versions 2>/dev/null | g
   echo "OK Extension installed: $VSIX_BASENAME"
 else
   echo "WARN: VS Code CLI install did not complete (the 'code' CLI may have hit the ICU data-descriptor error)." >&2
-  echo "   Install it via the VS Code UI instead (no 'code' CLI, avoids the ICU error):" >&2
+  echo "   Cause: a known VS Code bug - a Windows auto-update can leave 'code' pointing at a" >&2
+  echo "   broken Code.exe (microsoft/vscode#287053 / #282920). The VSIX itself is fine." >&2
+  echo "" >&2
+  echo "   Option A - install via the VS Code UI (works now, no 'code' CLI):" >&2
   echo "     1. In VS Code: Ctrl+Shift+P -> 'Extensions: Install from VSIX...'" >&2
   echo "     2. Select: $VSIX" >&2
   echo "     3. Ctrl+Shift+P -> 'Developer: Reload Window'" >&2
+  echo "" >&2
+  echo "   Option B - repair the 'code' CLI: reinstall VS Code (keeps settings + extensions)," >&2
+  echo "     then rerun this installer. https://code.visualstudio.com/download" >&2
 fi
 
 if [[ "$SKIP_CLI" -eq 0 ]]; then
