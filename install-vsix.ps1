@@ -167,6 +167,20 @@ function Install-VsixIntoVsCode ($codeCmd, $vsixPath) {
   }
 }
 
+function Reset-AzureCliCertOverrides {
+  # Drop the custom CA-bundle env vars for THIS session so Azure CLI's Python
+  # path falls back to the Windows certificate store (use_default_cert_store).
+  # Session scope only - the user's persisted values are left untouched.
+  $cleared = @()
+  foreach ($v in 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'SSL_CERT_FILE') {
+    if (Test-Path "Env:$v") {
+      Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+      $cleared += $v
+    }
+  }
+  if ($cleared.Count -gt 0) { Ok "Cleared custom CA bundle overrides for this session: $($cleared -join ', ')" }
+}
+
 function Ensure-AzureDevOpsAuth ($azCmd, $organizationUrl, $project) {
   Enable-AzureCliCorporateCa | Out-Null
 
@@ -184,6 +198,39 @@ function Ensure-AzureDevOpsAuth ($azCmd, $organizationUrl, $project) {
     '--only-show-errors'
   )
   if ($probe.ExitCode -eq 0) { return }
+
+  # The initial probe was rejected by Azure CLI's TLS certificate validation
+  # (corporate proxy such as Zscaler whose CA bundle is incomplete - 'unable to
+  # get local issuer certificate' - or whose Basic Constraints are not marked
+  # critical). Recover as the cert runbook prescribes: rebuild a complete CA
+  # bundle from the Windows stores, and if still rejected, drop every custom
+  # CA-bundle override so Azure CLI uses the Windows certificate store directly.
+  if (Test-IsCertificateError $probe.Output) {
+    Say "Azure CLI rejected the TLS certificate. Rebuilding CA trust from the Windows certificate store"
+    Enable-AzureCliCorporateCa -Force | Out-Null
+    Enable-AzureCliDefaultCertStore $azCmd | Out-Null
+    $probe = Invoke-Native $azCmd @(
+      'devops', 'project', 'show',
+      '--organization', $organizationUrl,
+      '--project', $project,
+      '-o', 'none',
+      '--only-show-errors'
+    )
+    if ($probe.ExitCode -eq 0) { return }
+
+    if (Test-IsCertificateError $probe.Output) {
+      Say "Still rejected. Switching Azure CLI to the Windows certificate store (clearing custom CA bundle overrides)"
+      Reset-AzureCliCertOverrides
+      $probe = Invoke-Native $azCmd @(
+        'devops', 'project', 'show',
+        '--organization', $organizationUrl,
+        '--project', $project,
+        '-o', 'none',
+        '--only-show-errors'
+      )
+      if ($probe.ExitCode -eq 0) { return }
+    }
+  }
 
   if (Test-IsAzureDevOpsAuthError $probe.Output) {
     Say "Azure DevOps sign-in required. Running 'az login' with Azure DevOps scope"
